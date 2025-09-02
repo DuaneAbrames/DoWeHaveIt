@@ -3,18 +3,18 @@ Param ([switch]$createList = $false
 )
 if ($PSVersionTable.Platform -eq "Unix") {
 	$mediaDir = '/mnt/user/media/'
-	$scriptDir = '/mnt/user/bigone/scripts/'
+	$scriptDir = '/mnt/user/bigone/scripts/DoWeHaveIt/'
 	$discListDir = '/mnt/user/bigone/DISC LIST/'
 	$GogDir = '/mnt/user/bigone/Bittorrent/Completed/GoG'
-	$SteamUnlokedDire = '/mnt/usr/bigone/BitTorrent/Completed/SteamUnlocked/'
+	$SteamUnlockedDir = '/mnt/usr/bigone/BitTorrent/Completed/SteamUnlocked/'
 	$SwitchDir = '/mnt/remotes/WHELP_SwitchRoms/'
 	$createList = $true
 } else {
     $mediaDir = 'R:/'
-	$scriptDir = 'S:/scripts/'
+	$scriptDir = 'S:/scripts/DoWeHaveIt/'
 	$discListDir = 'S:/DISC LIST/'
 	$GogDir = 'S:/BitTorrent/Completed/Gog/'
-	$SteamUnlokedDire = 'S:/BitTorrent/Completed/SteamUnlocked/'
+	$SteamUnlockedDir = 'S:/BitTorrent/Completed/SteamUnlocked/'
 	$SwitchDir = '\\whelp\SwitchRoms\'
 }
 
@@ -49,7 +49,6 @@ if ($createList) {
 	foreach ($d in $dirsToInclude) {
 		Write-Host "  $d (Episodes)"
 		foreach ($i in (gci "$mediaDir$d" -Recurse -file)) {
-			$i.basename
 			$output2 += new-object PSObject -property @{name=$i.name;location=$i.DirectoryName.Replace($mediaDir,'')}
 		}
 	}
@@ -58,12 +57,10 @@ if ($createList) {
 	foreach ($d in $dirsToInclude) {
 		Write-Host "  $d (Episodes)"
 		foreach ($i in (gci "$SwitchDir$d" -Recurse -file)) {
-			$i.basename
 			$output2 += new-object PSObject -property @{name=$i.name;location="SwitchRoms\$($i.DirectoryName.Replace($SwitchDir,''))"}
 		}
 	}
 	foreach ($i in (gci "$GogDir" -Directory -Exclude "Logs")) {
-		$i.basename
 		$output2 += new-object PSObject -property @{name=$i.name;location="GoG\$($i.Name.Replace($GogDir,''))"}
 	}
 	$output2 | export-csv -NoTypeInformation "$($scriptDir)DoWeHaveEpisodes.csv"
@@ -104,14 +101,7 @@ if ($createList) {
 	$FilterBoxLabel.height           = 10
 	$FilterBoxLabel.location         = New-Object System.Drawing.Point(10,8)
 	$FilterBoxLabel.Font             = New-Object System.Drawing.Font('Microsoft Sans Serif',10)
-	
-	
-	$EpisodeCheckBox = New-Object System.Windows.Forms.CheckBox
-    $EpisodeCheckBox.Location = New-Object System.Drawing.Size(500, 8)
-    $EpisodeCheckBox.Size = New-Object System.Drawing.Size(100, 20)
-    $EpisodeCheckBox.Text = "Episodes?"
-    $EpisodeCheckBox.Checked = $false
-    	
+		
 	$InfoLabel                  = New-Object system.Windows.Forms.Label
 	$InfoLabel.text             = "List updated at: $(get-date (get-item S:\scripts\DoWeHaveIt.csv).lastwritetime -format "dd-MM-yyyy HH:mm")"
 	$InfoLabel.AutoSize         = $true
@@ -129,37 +119,19 @@ if ($createList) {
 	$DataGridView1.RowHeadersVisible = $false
 	$DataGridView1.ReadOnly = $true
 	
-	$Button1                         = New-Object system.Windows.Forms.Button
-	$Button1.text                    = "Refresh"
-	$Button1.width                   = 78
-	$Button1.height                  = 21
-	$Button1.location                = New-Object System.Drawing.Point(392,6)
-	$Button1.Font                    = New-Object System.Drawing.Font('Microsoft Sans Serif',10)
+	$PasteButton                         = New-Object system.Windows.Forms.Button
+	$PasteButton.text                    = "Paste"
+	$PasteButton.width                   = 78
+	$PasteButton.height                  = 21
+	$PasteButton.location                = New-Object System.Drawing.Point(392,6)
+	$PasteButton.Font                    = New-Object System.Drawing.Font('Microsoft Sans Serif',10)
 
-    $EpisodeCheckBox.Add_CheckStateChanged(
-	{
-		#Write-Host "Click!"
-		$FilterTextBox.Text = ''
-		$InfoLabel.text             = '                Updating     ' 
-		Start-sleep -Milliseconds 100
-		#write-host $csv.count
-		$dt.clear()
-		$csv = Import-CSV  "$($scriptDir)DoWeHaveIt.csv" | select name,location
-		if ($EpisodeCheckBox.Checked) {
-			$csv += Import-CSV  "$($scriptDir)DoWeHaveEpisodes.csv" | select name,location
-		}
-		$csv = $csv | sort-object name
-		foreach ($i in $csv) { 
-			$r = $dt.NewRow()
-			$r.$locationColumn = $i.location
-			$r.$nameColumn = $i.name
-			$dt.Rows.Add($r) 
-		}
-		$DataGridView1.DataSource = $null
-		$DataGridView1.DataSource = $dt
-		$InfoLabel.text             = "List updated at: $(get-date (get-item S:\scripts\DoWeHaveIt.csv).lastwritetime -format "dd-MM-yyyy HH:mm")"
-		$FilterTextBox.Focus()
-	})
+	$RefreshButton                         = New-Object system.Windows.Forms.Button
+	$RefreshButton.text                    = "Refresh"
+	$RefreshButton.width                   = 78
+	$RefreshButton.height                  = 21
+	$RefreshButton.location                = New-Object System.Drawing.Point(477,6)
+	$RefreshButton.Font                    = New-Object System.Drawing.Font('Microsoft Sans Serif',10)
 	
 	$FilterTextBox.Add_TextChanged( 
 		{
@@ -169,7 +141,7 @@ if ($createList) {
 		}
 	)
 
-	$Button1.Add_Click(
+	$RefreshButton.Add_Click(
 	{
 		#Write-Host "Click!"
 		$FilterTextBox.Text = ''
@@ -179,9 +151,7 @@ if ($createList) {
 		$dt.clear()
 		
 		$csv = Import-CSV  "$($scriptDir)DoWeHaveIt.csv" | select name,location
-		if ($EpisodeCheckBox.Checked) {
-			$csv += Import-CSV  "$($scriptDir)DoWeHaveEpisodes.csv" | select name,location
-		}
+		$csv += Import-CSV  "$($scriptDir)DoWeHaveEpisodes.csv" | select name,location
 		#$csv = $csv | sort-object name
 		foreach ($i in $csv) { 
 			$r = $dt.NewRow()
@@ -195,6 +165,11 @@ if ($createList) {
 		$FilterTextBox.Focus()
 	})
 	
+	$PasteButton.Add_Click(
+	{
+		
+	})
+
 	$Form.Add_Resize(
 	{
 		$newWidth = $this.Width
@@ -205,7 +180,7 @@ if ($createList) {
 		#Write-Host $form.width $form.height
 	} )
 	
-	$Form.controls.AddRange(@($FilterTextBox,$Button1,$FilterBoxLabel,$EpisodeCheckBox,$InfoLabel,$DataGridView1))
+	$Form.controls.AddRange(@($FilterTextBox,$RefreshButton,$FilterBoxLabel,$EpisodeCheckBox,$InfoLabel,$DataGridView1))
 	#Write-Host $form.width $form.height
 	[void]$Form.ShowDialog()
 	
