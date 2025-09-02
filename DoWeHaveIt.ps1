@@ -192,10 +192,55 @@ if ($createList) {
 		$FilterTextBox.Focus()
 	})
 	
-	$PasteButton.Add_Click(
-	{
-		
-	})
+	# PasteButton click
+$PasteButton.Add_Click({
+    try {
+        if (-not [System.Windows.Forms.Clipboard]::ContainsText()) {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Clipboard does not contain text.",
+                "Paste",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Information
+            ) | Out-Null
+            return
+        }
+
+        $text = [System.Windows.Forms.Clipboard]::GetText().Trim()
+
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Clipboard text is empty.",
+                "Paste",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Information
+            ) | Out-Null
+            return
+        }
+
+        if ($text.Length -gt 50) {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Clipboard text is longer than 50 characters (limit: 50).",
+                "Paste",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            ) | Out-Null
+            return
+        }
+
+        $FilterTextBox.Text = $text
+        $FilterTextBox.Focus()
+        $FilterTextBox.SelectionStart = $FilterTextBox.Text.Length
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Could not read the clipboard.",
+            "Paste",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        ) | Out-Null
+    }
+})
+
 
 	$Form.Add_Resize(
 	{
