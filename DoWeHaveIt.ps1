@@ -5,8 +5,9 @@ if ($PSVersionTable.Platform -eq "Unix") {
 	$mediaDir = '/mnt/user/media/'
 	$scriptDir = '/mnt/user/bigone/scripts/DoWeHaveIt/'
 	$discListDir = '/mnt/user/bigone/DISC LIST/'
-	$GogDir = '/mnt/user/bigone/Bittorrent/Completed/GoG'
-	$SteamUnlockedDir = '/mnt/usr/bigone/BitTorrent/Completed/SteamUnlocked/'
+	$GogDir = '/mnt/user/bigone/Bittorrent/Completed/GoG/'
+	$CompletedDir = '/mnt/user/bigone/Bittorrent/Completed/'
+	$SteamUnlockedDir = '/mnt/user/bigone/Bittorrent/Completed/SteamUnlocked/'
 	$SwitchDir = '/mnt/remotes/WHELP_SwitchRoms/'
 	$createList = $true
 } else {
@@ -14,10 +15,11 @@ if ($PSVersionTable.Platform -eq "Unix") {
 	$scriptDir = 'S:/scripts/DoWeHaveIt/'
 	$discListDir = 'S:/DISC LIST/'
 	$GogDir = 'S:/BitTorrent/Completed/Gog/'
+	$CompletedDir = 'S:/BitTorrent/Completed/'
 	$SteamUnlockedDir = 'S:/BitTorrent/Completed/SteamUnlocked/'
 	$SwitchDir = '\\whelp\SwitchRoms\'
 }
-
+$ExcludedThings = ('___Duplicates')
 if ($createList) {
 	Write-Host 'Checking directories'
 	$dirsToInclude = ('Movies','Troma','TV Shows','101 Horror Movies Mega Pack')
@@ -25,46 +27,71 @@ if ($createList) {
 	foreach ($d in $dirsToInclude) {
 		Write-Host "  $d"
 		foreach ($i in (gci "$mediaDir$d" -Directory)) {
-			#Write-Host "    - $i"
-			$output += new-object PSObject -property @{name=$i.name;location=$d}
+			#Write-Host "    - $i
+			if ($ExcludedThings -notcontains $i.name) {
+				$output += new-object PSObject -property @{name=$i.name;location=$d}
+			}
 		}
 	}
-	Write-Host 'Importing Disc List'
+	Write-Host ' Disc List (Import)'
 	$dl = import-csv "$($discListDir)disc list.csv"
 	foreach ($i in $dl) {
-		$output += new-object PSObject -property @{name=$i.name;location='Disc List'}
+		if ($ExcludedThings -notcontains $i.name) {
+			$output += new-object PSObject -property @{name=$i.name;location='Disc List'}
+		}
 	}
 	
-	Write-Host 'Importing DVD Profiler'
+	Write-Host ' DVD Profiler (Import)'
 	[xml]$dvdProfiler = get-content "$($discListDir)Collection.xml"
 	foreach ($i in $dvdProfiler.Collection.DVD.title) {
-		$output += new-object PSObject -property @{name=$i;location='DVD Profiler'}
+		if ($ExcludedThings -notcontains $i) {
+			$output += new-object PSObject -property @{name=$i;location='DVD Profiler'}
+		}
 	}
-	$output = $output | sort-object name,location | select name,location 
-	$output | Export-csv -notypeinformation "$($scriptDir)DoWeHaveIt.csv"
-	Write-Host "$($output.count) rows exported."
-	## New Episode code
+	## Episodes Section ##
+	$VideoExtensions = @('.mkv','.mp4','.avi','.mov','.m4v','.wmv','.ts','.m2ts','.mpg','.mpeg','.flv','.webm')
 	$dirsToInclude = ('TV Shows')
-	$output2 = @()
 	foreach ($d in $dirsToInclude) {
 		Write-Host "  $d (Episodes)"
-		foreach ($i in (gci "$mediaDir$d" -Recurse -file)) {
-			$output2 += new-object PSObject -property @{name=$i.name;location=$i.DirectoryName.Replace($mediaDir,'')}
+		foreach ($i in (gci "$mediaDir$d" -Recurse -file | ?{$VideoExtensions -contains $_.extension})) {
+			$dir = Split-Path -leaf (Split-Path $i.fullname)
+			if ($ExcludedThings -notcontains $i.name -and ($dir -ilike "Season *" -or $dir -ieq "Specials")) {
+				$output += new-object PSObject -property @{name=$i.name;location=$i.DirectoryName.Replace($mediaDir,'')}
+			}
 		}
 	}
 	#Here will Be GoG, Switch, Etc.
 	$dirsToInclude = ('Base','Update','DLC')
 	foreach ($d in $dirsToInclude) {
-		Write-Host "  $d (Episodes)"
+		Write-Host "  $d (Switch)"
 		foreach ($i in (gci "$SwitchDir$d" -Recurse -file)) {
-			$output2 += new-object PSObject -property @{name=$i.name;location="SwitchRoms\$($i.DirectoryName.Replace($SwitchDir,''))"}
+			if ($ExcludedThings -notcontains $i.name) {
+				$output += new-object PSObject -property @{name=$i.name;location="SwitchRoms\$($i.DirectoryName.Replace($SwitchDir,''))"}
+			}
 		}
 	}
-	foreach ($i in (gci "$GogDir" -Directory -Exclude "Logs")) {
-		$output2 += new-object PSObject -property @{name=$i.name;location="GoG\$($i.Name.Replace($GogDir,''))"}
+	Write-Host "  Completed (RAR Files)"
+	foreach ($i in (gci "$CompletedDir" -File '*.rar')) {
+		
+		if ($ExcludedThings -notcontains $i.name) {
+			$output += new-object PSObject -property @{name=$i.name;location="Completed"}
+		}
 	}
-	$output2 | export-csv -NoTypeInformation "$($scriptDir)DoWeHaveEpisodes.csv"
-	Write-Host "$($output2.count) rows exported."
+	Write-Host "  SteamUnlocked"
+	foreach ($i in (gci "$SteamUnlockedDir" -File)) {
+		if ($ExcludedThings -notcontains $i.name) {
+			$output += new-object PSObject -property @{name=$i.name;location="SteamUnlocked"}
+		}
+	}
+	Write-Host "  GoG"
+	foreach ($i in (gci "$GogDir" -Directory -Exclude "Logs")) {
+		if ($ExcludedThings -notcontains $i.name) {
+			$output += new-object PSObject -property @{name=$i.name;location="GoG"}
+		}
+	}
+	$output = $output | sort-object name,location | select name,location 
+	$output | Export-csv -notypeinformation "$($scriptDir)DoWeHaveIt.csv"
+	Write-Host "$($output.count) rows exported."
 } else {
 	$csv = Import-CSV  "$($scriptDir)DoWeHaveIt.csv" | select name,location 
 	$dt = New-Object System.Data.DataTable
@@ -180,7 +207,7 @@ if ($createList) {
 		#Write-Host $form.width $form.height
 	} )
 	
-	$Form.controls.AddRange(@($FilterTextBox,$RefreshButton,$FilterBoxLabel,$EpisodeCheckBox,$InfoLabel,$DataGridView1))
+	$Form.controls.AddRange(@($FilterTextBox,$PasteButton,$RefreshButton,$FilterBoxLabel,$InfoLabel,$DataGridView1))
 	#Write-Host $form.width $form.height
 	[void]$Form.ShowDialog()
 	
