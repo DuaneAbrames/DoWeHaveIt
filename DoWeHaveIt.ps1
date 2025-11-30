@@ -19,6 +19,7 @@ if ($PSVersionTable.Platform -eq "Unix") {
 	$SteamUnlockedDir = 'S:/BitTorrent/Completed/SteamUnlocked/'
 	$SwitchDir = '\\whelp\SwitchRoms\'
 }
+$outputCSV = "$($scriptDir)DoWeHaveIt.csv"
 $ExcludedThings = ('___Duplicates')
 if ($createList) {
 	Write-Host 'Checking directories under media:'
@@ -104,10 +105,11 @@ if ($createList) {
 		}
 	}
 	$output = $output | sort-object name,location | select name,location 
-	$output | Export-csv -notypeinformation "$($scriptDir)DoWeHaveIt.csv"
+	$output | Export-csv -notypeinformation $outputCSV
 	Write-Host "$($output.count) rows exported."
 } else {
-	$csv = Import-CSV  "$($scriptDir)DoWeHaveIt.csv" | select name,location 
+	$csv = Import-CSV  $outputCSV | select name,location 
+	$lastUpdated = (Get-Item $outputCSV).LastWriteTime
 	$dt = New-Object System.Data.DataTable
 	$nameColumn = $dt.columns.add('Name')
 	$locationColumn = $dt.columns.add('Location')
@@ -120,8 +122,10 @@ if ($createList) {
 	Add-Type -AssemblyName System.Windows.Forms
 	[System.Windows.Forms.Application]::EnableVisualStyles()
 
+	$FormStartWidth = 860
+
 	$Form                            = New-Object system.Windows.Forms.Form
-	$Form.ClientSize                 = New-Object System.Drawing.Point(860,400)
+	$Form.ClientSize                 = New-Object System.Drawing.Point($FormStartWidth,400)
 	$Form.text                       = "Do We Have It?"
 	$Icon                            = New-Object system.drawing.icon ("$scriptDir/Help.256.ico")
 	$Form.Icon                       = $Icon
@@ -144,12 +148,73 @@ if ($createList) {
 	$FilterBoxLabel.Font             = New-Object System.Drawing.Font('Microsoft Sans Serif',10)
 		
 	$InfoLabel                  = New-Object system.Windows.Forms.Label
-	$InfoLabel.text             = "List updated at: $(get-date (get-item S:\scripts\DoWeHaveIt.csv).lastwritetime -format "dd-MM-yyyy HH:mm")"
+	$InfoLabel.text             = $(get-date (get-item $outputCSV).lastwritetime -format "MM-dd-yyyy HH:mm")
 	$InfoLabel.AutoSize         = $true
 	$InfoLabel.width            = 200
 	$InfoLabel.height           = 10
-	$InfoLabel.location         = New-Object System.Drawing.Point(550,8)
+	$InfoLabel.location         = New-Object System.Drawing.Point(($Form.Width - 228),9)
 	$InfoLabel.Font             = New-Object System.Drawing.Font('Microsoft Sans Serif',10)
+	$InfoLabel.TextAlign        = [System.Drawing.ContentAlignment]::MiddleRight
+	$InfoLabel.Anchor           = ([System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right)
+
+	function Update-InfoLabelPosition {
+		param(
+			[System.Windows.Forms.Label] $label,
+			[System.Windows.Forms.Form] $form
+		)
+		try {
+			if ($null -eq $label -or $null -eq $form) { return }
+			$pref = $label.PreferredSize
+			$label.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 20 - $pref.Width), $label.Location.Y)
+		} catch {}
+	}
+	# Initial alignment 20px from the right edge
+	Update-InfoLabelPosition -label $InfoLabel -form $Form
+
+	function Set-InfoLabel {
+		param(
+			[System.Windows.Forms.Label] $label,
+			[int] $rowCount,
+			[datetime] $lastUpdated,
+			[System.Windows.Forms.Form] $form
+		)
+		if ($null -eq $label) { return }
+		$label.Text = "## Rows - $rowCount | " + (Get-Date $lastUpdated -Format "MM-dd-yyyy HH:mm")
+		if ($null -ne $form) {
+			Update-InfoLabelPosition -label $label -form $form
+		}
+	}
+
+	function Get-ControlCenterY {
+		param([System.Windows.Forms.Control]$ctl)
+		return [int][Math]::Round($ctl.Location.Y + ($ctl.Height / 2.0))
+	}
+
+	function Align-TopRowControls {
+		param(
+			[System.Windows.Forms.Control]$lbl,
+			[System.Windows.Forms.Control]$txt,
+			[System.Windows.Forms.Control]$btnPaste,
+			[System.Windows.Forms.Control]$btnRefresh,
+			[System.Windows.Forms.Control]$info
+		)
+		$centers = @(
+			(Get-ControlCenterY -ctl $lbl),
+			(Get-ControlCenterY -ctl $txt),
+			(Get-ControlCenterY -ctl $btnPaste),
+			(Get-ControlCenterY -ctl $btnRefresh),
+			(Get-ControlCenterY -ctl $info)
+		)
+		$avg = (($centers | Measure-Object -Average).Average)
+		$centerY = [int][Math]::Round($avg)
+		foreach ($c in @($lbl,$txt,$btnPaste,$btnRefresh,$info)) {
+			$h = $c.Height
+			$newY = [int]($centerY - [Math]::Round($h/2.0))
+			$c.Location = New-Object System.Drawing.Point($c.Location.X, $newY)
+		}
+	}
+
+    # Initial align will be performed after all controls are created/added
 
 	$DataGridView1                   = New-Object system.Windows.Forms.DataGridView
 	$DataGridView1.width             = 820  #Form - 56
@@ -376,31 +441,41 @@ if ($createList) {
 	$RefreshButton.height                  = 21
 	$RefreshButton.location                = New-Object System.Drawing.Point(477,6)
 	$RefreshButton.Font                    = New-Object System.Drawing.Font('Microsoft Sans Serif',10)
-	
-	$FilterTextBox.Add_TextChanged( 
-		{
-			$dv = New-Object System.Data.DataView($dt)
-			# Escape special characters for DataView RowFilter LIKE patterns safely
-			$search = [string]$FilterTextBox.Text
-			$sb = New-Object System.Text.StringBuilder
-			foreach ($ch in $search.ToCharArray()) {
-				switch ($ch) {
-					"'" { [void]$sb.Append("''") }
-					"[" { [void]$sb.Append("[[]") }
-					"]" { [void]$sb.Append("[]]") }
-					"%" { [void]$sb.Append("[%]") }
-					"*" { [void]$sb.Append("[*]") }
-					"_" { [void]$sb.Append("[_]") }
-					"?" { [void]$sb.Append("[?]") }
-					"#" { [void]$sb.Append("[#]") }
-					Default { [void]$sb.Append($ch) }
-				}
+
+	function Escape-ForRowFilter {
+		param([string]$text)
+		$sb = New-Object System.Text.StringBuilder
+		foreach ($ch in $text.ToCharArray()) {
+			switch ($ch) {
+				"'" { [void]$sb.Append("''") }
+				"[" { [void]$sb.Append("[[]") }
+				"]" { [void]$sb.Append("[]]") }
+				"%" { [void]$sb.Append("[%]") }
+				"*" { [void]$sb.Append("[*]") }
+				"_" { [void]$sb.Append("[_]") }
+				"?" { [void]$sb.Append("[?]") }
+				"#" { [void]$sb.Append("[#]") }
+				Default { [void]$sb.Append($ch) }
 			}
-			$escaped = $sb.ToString()
-			$DV.RowFilter = "Name LIKE '*$escaped*'"
-			$DataGridView1.DataSource = $dv
 		}
-	)
+		$sb.ToString()
+	}
+
+	$FilterTextBox.Add_TextChanged({
+		$dv = New-Object System.Data.DataView($dt)
+		$terms = $FilterTextBox.Text -split '\s+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+		if ($terms.Count -eq 0) {
+			$dv.RowFilter = $null
+		} else {
+			$escapedTerms = $terms | ForEach-Object { Escape-ForRowFilter $_ }
+			$dv.RowFilter = ($escapedTerms | ForEach-Object { "(Name LIKE '%$_%' OR Location LIKE '%$_%')" }) -join ' AND '
+		}
+		$DataGridView1.DataSource = $dv
+		Set-InfoLabel -label $InfoLabel -rowCount $dv.Count -lastUpdated $lastUpdated -form $Form
+	})
+
+	# Set initial info label text
+	Set-InfoLabel -label $InfoLabel -rowCount $dt.Rows.Count -lastUpdated $lastUpdated -form $Form
 
 	$RefreshButton.Add_Click(
 	{
@@ -411,7 +486,8 @@ if ($createList) {
 		#write-host $csv.count
 		$dt.clear()
 		
-		$csv = Import-CSV  "$($scriptDir)DoWeHaveIt.csv" | select name,location
+		$csv = Import-CSV  $outputCSV | select name,location
+		$lastUpdated = (Get-Item $outputCSV).LastWriteTime
 		#$csv = $csv | sort-object name
 		foreach ($i in $csv) { 
 			$r = $dt.NewRow()
@@ -421,7 +497,9 @@ if ($createList) {
 		}
 		$DataGridView1.DataSource = $null
 		$DataGridView1.DataSource = $dt
-		$InfoLabel.text             = "List updated at: $(get-date (get-item S:\scripts\DoWeHaveIt.csv).lastwritetime -format "dd-MM-yyyy HH:mm")"
+		Set-InfoLabel -label $InfoLabel -rowCount $dt.Rows.Count -lastUpdated $lastUpdated -form $Form
+		Align-TopRowControls -lbl $FilterBoxLabel -txt $FilterTextBox -btnPaste $PasteButton -btnRefresh $RefreshButton -info $InfoLabel
+		Update-InfoLabelPosition -label $InfoLabel -form $Form
 		$FilterTextBox.Focus()
 	})
 	
@@ -481,13 +559,19 @@ $PasteButton.Add_Click({
         $newHeight = $this.Height
 		$DataGridView1.width = $newWidth - 56
 		$DataGridView1.height = $newHeight - 99
-		$InfoLabel.location         = New-Object System.Drawing.Point(($newWidth - 226),11)
+		Align-TopRowControls -lbl $FilterBoxLabel -txt $FilterTextBox -btnPaste $PasteButton -btnRefresh $RefreshButton -info $InfoLabel
+		Update-InfoLabelPosition -label $InfoLabel -form $this
 		#Write-Host $form.width $form.height
 	} )
 	
-	$Form.controls.AddRange(@($FilterTextBox,$PasteButton,$RefreshButton,$FilterBoxLabel,$InfoLabel,$DataGridView1))
-	#Write-Host $form.width $form.height
-	[void]$Form.ShowDialog()
+    $Form.controls.AddRange(@($FilterTextBox,$PasteButton,$RefreshButton,$FilterBoxLabel,$InfoLabel,$DataGridView1))
+    # Align once the form is shown to ensure final sizes/positions
+    $Form.Add_Shown({
+        Align-TopRowControls -lbl $FilterBoxLabel -txt $FilterTextBox -btnPaste $PasteButton -btnRefresh $RefreshButton -info $InfoLabel
+        Update-InfoLabelPosition -label $InfoLabel -form $Form
+    })
+    #Write-Host $form.width $form.height
+    [void]$Form.ShowDialog()
 	
 	#$list | select name,location |  out-gridview -OutputMode Single
 }
