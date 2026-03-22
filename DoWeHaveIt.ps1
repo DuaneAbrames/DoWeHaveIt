@@ -20,21 +20,47 @@ if ($PSVersionTable.Platform -eq "Unix") {
 	$SwitchDir = '\\whelp\SwitchRoms\'
 }
 $outputCSV = "$($scriptDir)DoWeHaveIt.csv"
+$makeListLog = "$($scriptDir)makelist.csv"
 $ExcludedThings = ('___Duplicates','.trash')
 if ($createList) {
+	$makeListRows = New-Object System.Collections.Generic.List[object]
+
+	function Write-CreateListMessage {
+		param(
+			[string]$Message
+		)
+		Write-Host $Message
+	}
+
+	function Write-SourceRowCount {
+		param(
+			[string]$Label,
+			[int]$StartCount,
+			[array]$OutputItems
+		)
+		$rowsAdded = $OutputItems.Count - $StartCount
+		$makeListRows.Add([pscustomobject]@{
+			Source = $Label
+			Rows = $rowsAdded
+		}) | Out-Null
+		Write-CreateListMessage "$Label - $rowsAdded"
+	}
+
 	Write-Host 'Checking directories under media:'
 	$dirsToInclude = ('Movies','TV Shows')
 	$output = @()
 	foreach ($d in $dirsToInclude) {
-		Write-Host "  $d"
-		foreach ($i in (gci "$mediaDir$d" -Directory)) {
+		$startCount = $output.Count
+		foreach ($i in (Get-ChildItem "$mediaDir$d" -Directory)) {
 			#Write-Host "    - $i
 			if ($ExcludedThings -notcontains $i.name) {
 				$output += new-object PSObject -property @{name=$i.name;location=$d}
 			}
 		}
+		Write-SourceRowCount -Label $d -StartCount $startCount -OutputItems $output
 	}
-	Write-Host 'Disc List (Import)'
+
+	$startCount = $output.Count
 	$dl = import-csv "$($discListDir)disc list.csv"
 
 	#This pulls the first column name from the CSV, which is the title of the movie/game/etc. The second column is usually "Location" but we want to be flexible in case it changes.
@@ -46,75 +72,93 @@ if ($createList) {
 			$output += new-object PSObject -property @{name=$i;location='Disc List'}
 		}
 	}
+	Write-SourceRowCount -Label 'Disc List' -StartCount $startCount -OutputItems $output
 
-	Write-Host 'DVD Profiler (Import)'
+	$startCount = $output.Count
 	[xml]$dvdProfiler = get-content "$($discListDir)Collection.xml"
 	foreach ($i in $dvdProfiler.Collection.DVD.title) {
 		if ($ExcludedThings -notcontains $i) {
 			$output += new-object PSObject -property @{name=$i;location='DVD Profiler'}
 		}
 	}
+	Write-SourceRowCount -Label 'DVD Profiler' -StartCount $startCount -OutputItems $output
 	## Episodes Section ##
 	$VideoExtensions = @('.mkv','.mp4','.avi','.mov','.m4v','.wmv','.ts','.m2ts','.mpg','.mpeg','.flv','.webm')
 	$dirsToInclude = ('TV Shows')
 	foreach ($d in $dirsToInclude) {
-		Write-Host "$d (Episodes)"
-		foreach ($i in (gci "$mediaDir$d" -Recurse -file | ?{$VideoExtensions -contains $_.extension})) {
+		$startCount = $output.Count
+		foreach ($i in (Get-ChildItem "$mediaDir$d" -Recurse -file | Where-Object{$VideoExtensions -contains $_.extension})) {
 			$dir = Split-Path -leaf (Split-Path $i.fullname)
 			if ($ExcludedThings -notcontains $i.name -and ($dir -ilike "Season *" -or $dir -ieq "Specials")) {
 				$output += new-object PSObject -property @{name=$i.name;location=$i.DirectoryName.Replace($mediaDir,'')}
 			}
 		}
+		Write-SourceRowCount -Label "$d (Episodes)" -StartCount $startCount -OutputItems $output
 	}
 	#Here will Be GoG, Switch, Etc.
 	$dirsToInclude = ('Base','Update','DLC')
 	foreach ($d in $dirsToInclude) {
-		Write-Host "$d (Switch)"
-		foreach ($i in (gci "$SwitchDir$d" -Recurse -file)) {
+		$startCount = $output.Count
+		foreach ($i in (Get-ChildItem "$SwitchDir$d" -Recurse -file)) {
 			if ($ExcludedThings -notcontains $i.name) {
 				$output += new-object PSObject -property @{name=$i.name;location="SwitchRoms/$($i.DirectoryName.Replace($SwitchDir,''))"}
 			}
 		}
+		Write-SourceRowCount -Label "$d (Switch)" -StartCount $startCount -OutputItems $output
 	}
-	Write-Host "Completed (RAR Files)"
-	foreach ($i in (gci "$CompletedDir" -File '*.rar')) {
+	$startCount = $output.Count
+	foreach ($i in (Get-ChildItem "$CompletedDir" -File '*.rar')) {
 
 		if ($ExcludedThings -notcontains $i.name) {
 			$output += new-object PSObject -property @{name=$i.name;location="Completed"}
 		}
 	}
-	Write-Host "Completed (ZIP Files)"
-	foreach ($i in (gci "$CompletedDir" -File '*.zip')) {
+	Write-SourceRowCount -Label 'Completed (RAR Files)' -StartCount $startCount -OutputItems $output
+
+	$startCount = $output.Count
+	foreach ($i in (Get-ChildItem "$CompletedDir" -File '*.zip')) {
 
 		if ($ExcludedThings -notcontains $i.name) {
 			$output += new-object PSObject -property @{name=$i.name;location="Completed"}
 		}
 	}
-	Write-Host "Completed (ISO Files)"
-	foreach ($i in (gci "$CompletedDir" -File '*.iso')) {
+	Write-SourceRowCount -Label 'Completed (ZIP Files)' -StartCount $startCount -OutputItems $output
+
+	$startCount = $output.Count
+	foreach ($i in (Get-ChildItem "$CompletedDir" -File '*.iso')) {
 
 		if ($ExcludedThings -notcontains $i.name) {
 			$output += new-object PSObject -property @{name=$i.name;location="Completed"}
 		}
 	}
-	Write-Host "SteamUnlocked"
-	foreach ($i in (gci "$SteamUnlockedDir" -File)) {
+	Write-SourceRowCount -Label 'Completed (ISO Files)' -StartCount $startCount -OutputItems $output
+
+	$startCount = $output.Count
+	foreach ($i in (Get-ChildItem "$SteamUnlockedDir" -File)) {
 		if ($ExcludedThings -notcontains $i.name) {
 			$output += new-object PSObject -property @{name=$i.name;location="SteamUnlocked"}
 		}
 	}
-	Write-Host "GoG"
-	foreach ($i in (gci "$GogDir" -Directory -Exclude "Logs")) {
+	Write-SourceRowCount -Label 'SteamUnlocked' -StartCount $startCount -OutputItems $output
+
+	$startCount = $output.Count
+	foreach ($i in (Get-ChildItem "$GogDir" -Directory -Exclude "Logs")) {
 		if ($ExcludedThings -notcontains $i.name) {
 			$output += new-object PSObject -property @{name=$i.name;location="GoG"}
 		}
 	}
-	$output = $output | ?{$_.name -notlike ""} | sort-object name,location | select name,location
+	Write-SourceRowCount -Label 'GoG' -StartCount $startCount -OutputItems $output
+	$output = $output | Where-Object{$_.name -notlike ""} | sort-object name,location |  Select-Object  name,location
 	$output | Export-csv -notypeinformation $outputCSV
-	Write-Host "$($output.count) rows exported."
+	$makeListRows.Add([pscustomobject]@{
+		Source = 'TOTAL'
+		Rows = $output.count
+	}) | Out-Null
+	Write-CreateListMessage "$($output.count) rows exported."
+	$makeListRows | Export-Csv -NoTypeInformation -Path $makeListLog
 } else {
-	$csv = Import-CSV  $outputCSV | select name,location
-	$lastUpdated = (Get-Item $outputCSV).LastWriteTime
+	$csv = Import-CSV  $outputCSV |  Select-Object  name,location
+	$script:lastUpdated = (Get-Item $outputCSV).LastWriteTime
 	$dt = New-Object System.Data.DataTable
 	$nameColumn = $dt.columns.add('Name')
 	$locationColumn = $dt.columns.add('Location')
@@ -161,6 +205,7 @@ if ($createList) {
 	$InfoLabel.Font             = New-Object System.Drawing.Font('Microsoft Sans Serif',10)
 	$InfoLabel.TextAlign        = [System.Drawing.ContentAlignment]::MiddleRight
 	$InfoLabel.Anchor           = ([System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right)
+	$InfoLabel.Cursor           = [System.Windows.Forms.Cursors]::Hand
 
 	function Update-InfoLabelPosition {
 		param(
@@ -188,6 +233,140 @@ if ($createList) {
 		if ($null -ne $form) {
 			Update-InfoLabelPosition -label $label -form $form
 		}
+	}
+
+	function Show-MakeListLogDialog {
+		param(
+			[string]$LogPath,
+			[System.Windows.Forms.Form]$Owner
+		)
+
+		if (-not (Test-Path -LiteralPath $LogPath)) {
+			[System.Windows.Forms.MessageBox]::Show(
+				"Could not find makelist csv: $LogPath",
+				"Create List Log",
+				[System.Windows.Forms.MessageBoxButtons]::OK,
+				[System.Windows.Forms.MessageBoxIcon]::Information
+			) | Out-Null
+			return
+		}
+
+		$logRows = Import-Csv -LiteralPath $LogPath
+		$logTable = New-Object System.Data.DataTable
+		$null = $logTable.Columns.Add('Source')
+		$null = $logTable.Columns.Add('Rows')
+		foreach ($logRow in $logRows) {
+			$dtRow = $logTable.NewRow()
+			$dtRow['Source'] = $logRow.Source
+			$dtRow['Rows'] = $logRow.Rows
+			$logTable.Rows.Add($dtRow)
+		}
+
+		$logForm = New-Object System.Windows.Forms.Form
+		$logForm.Text = 'Create List Log'
+		$logForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+		$logForm.ClientSize = New-Object System.Drawing.Size(700, 500)
+		$logForm.MinimumSize = New-Object System.Drawing.Size(500, 300)
+		$logForm.MaximizeBox = $true
+		$logForm.MinimizeBox = $false
+		$logForm.ShowInTaskbar = $false
+		$logForm.Icon = $Icon
+
+		$logGrid = New-Object System.Windows.Forms.DataGridView
+		$logGrid.Location = New-Object System.Drawing.Point(12,12)
+		$logGrid.Size = New-Object System.Drawing.Size(676,442)
+		$logGrid.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor
+			[System.Windows.Forms.AnchorStyles]::Bottom -bor
+			[System.Windows.Forms.AnchorStyles]::Left -bor
+			[System.Windows.Forms.AnchorStyles]::Right
+		$logGrid.DataSource = $logTable
+		$logGrid.AutoGenerateColumns = $true
+		$logGrid.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::Fill
+		$logGrid.BackgroundColor = [System.Drawing.SystemColors]::Window
+		$logGrid.BorderStyle = [System.Windows.Forms.BorderStyle]::Fixed3D
+		$logGrid.RowHeadersVisible = $false
+		$logGrid.ReadOnly = $true
+		$logGrid.AllowUserToAddRows = $false
+		$logGrid.AllowUserToDeleteRows = $false
+		$logGrid.AllowUserToResizeRows = $false
+		$logGrid.AllowUserToResizeColumns = $false
+		$logGrid.SelectionMode = [System.Windows.Forms.DataGridViewSelectionMode]::FullRowSelect
+		$logGrid.MultiSelect = $false
+		$logGrid.ColumnHeadersHeightSizeMode = [System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode]::DisableResizing
+		$logGrid.RowHeadersWidthSizeMode = [System.Windows.Forms.DataGridViewRowHeadersWidthSizeMode]::DisableResizing
+		$logGrid.DefaultCellStyle.SelectionBackColor = $logGrid.DefaultCellStyle.BackColor
+		$logGrid.DefaultCellStyle.SelectionForeColor = $logGrid.DefaultCellStyle.ForeColor
+		$logGrid.Add_RowPrePaint({
+			param($incomingSender, $e)
+			if ($e.RowIndex -lt 0) { return }
+			$isLastRow = $e.RowIndex -eq ($incomingSender.Rows.Count - 1)
+			if ($isLastRow) {
+				$row = $incomingSender.Rows[$e.RowIndex]
+				$row.DefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(255, 244, 214)
+				$row.DefaultCellStyle.ForeColor = [System.Drawing.Color]::FromArgb(90, 60, 0)
+				$row.DefaultCellStyle.SelectionBackColor = [System.Drawing.Color]::FromArgb(255, 230, 170)
+				$row.DefaultCellStyle.SelectionForeColor = [System.Drawing.Color]::FromArgb(90, 60, 0)
+				$row.DefaultCellStyle.Font = New-Object System.Drawing.Font($incomingSender.Font, [System.Drawing.FontStyle]::Bold)
+			}
+		})
+
+		$okButton = New-Object System.Windows.Forms.Button
+		$okButton.Text = 'OK'
+		$okButton.Size = New-Object System.Drawing.Size(90,28)
+		$okButton.Location = New-Object System.Drawing.Point(598,462)
+		$okButton.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Right
+		$okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
+
+		$logForm.AcceptButton = $okButton
+		$logForm.CancelButton = $okButton
+		$logForm.Controls.AddRange(@($logGrid,$okButton))
+
+		if ($null -ne $Owner) {
+			[void]$logForm.ShowDialog($Owner)
+		} else {
+			[void]$logForm.ShowDialog()
+		}
+	}
+
+	function Get-InfoLabelTimestamp {
+		param(
+			[string]$LabelText
+		)
+
+		if ([string]::IsNullOrWhiteSpace($LabelText) -or $LabelText -notmatch ' - ') {
+			return $null
+		}
+
+		$timestampText = ($LabelText -split ' - ', 2)[1].Trim()
+		try {
+			return [datetime]::ParseExact($timestampText, 'MM-dd-yyyy HH:mm', [System.Globalization.CultureInfo]::InvariantCulture)
+		} catch {
+			return $null
+		}
+	}
+
+	function Get-MakeListTimestamp {
+		param(
+			[string]$LogPath
+		)
+
+		if (-not (Test-Path -LiteralPath $LogPath)) {
+			return $null
+		}
+
+		try {
+			return (Get-Item -LiteralPath $LogPath).LastWriteTime
+		} catch {
+			return $null
+		}
+	}
+
+	function Get-MinuteStamp {
+		param(
+			[datetime]$DateValue
+		)
+
+		return Get-Date $DateValue -Format 'yyyy-MM-dd HH:mm'
 	}
 
 	function Get-ControlCenterY {
@@ -269,7 +448,7 @@ if ($createList) {
 
 	# Ensure right-click selects the row under the cursor
 	$DataGridView1.Add_CellMouseDown({
-		param($sender,$e)
+		param($incomingSender,$e)
 		if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right -and $e.RowIndex -ge 0 -and $e.ColumnIndex -ge 0) {
 			$DataGridView1.CurrentCell = $DataGridView1.Rows[$e.RowIndex].Cells[$e.ColumnIndex]
 			$DataGridView1.Rows[$e.RowIndex].Selected = $true
@@ -315,7 +494,7 @@ if ($createList) {
 
 	# Open location on double-click
 	$DataGridView1.Add_CellDoubleClick({
-		param($sender, $e)
+		param($incomingSender, $e)
 		if ($e.RowIndex -lt 0) { return }
 		$row = $DataGridView1.Rows[$e.RowIndex]
 		$name = [string]$row.Cells['Name'].Value
@@ -410,7 +589,7 @@ if ($createList) {
 
 	# Handle Ctrl+C in the grid to copy selection
 	$DataGridView1.Add_KeyDown({
-		param($sender,$e)
+		param($incomingSender,$e)
 		if ($e.Control -and $e.KeyCode -eq [System.Windows.Forms.Keys]::C) {
 			try {
 				if ($DataGridView1.GetCellCount([System.Windows.Forms.DataGridViewElementStates]::Selected) -gt 0) {
@@ -476,24 +655,20 @@ if ($createList) {
 			$dv.RowFilter = ($escapedTerms | ForEach-Object { "(Name LIKE '%$_%' OR Location LIKE '%$_%')" }) -join ' AND '
 		}
 		$DataGridView1.DataSource = $dv
-		Set-InfoLabel -label $InfoLabel -rowCount $dv.Count -lastUpdated $lastUpdated -form $Form
+		Set-InfoLabel -label $InfoLabel -rowCount $dv.Count -lastUpdated $script:lastUpdated -form $Form
 	})
 
 	# Set initial info label text
-	Set-InfoLabel -label $InfoLabel -rowCount $dt.Rows.Count -lastUpdated $lastUpdated -form $Form
+	Set-InfoLabel -label $InfoLabel -rowCount $dt.Rows.Count -lastUpdated $script:lastUpdated -form $Form
 
-	$RefreshButton.Add_Click(
-	{
-		#Write-Host "Click!"
+	function Refresh-GridData {
 		$FilterTextBox.Text = ''
-		$InfoLabel.text             = '                Updating     '
+		$InfoLabel.text = '                Updating     '
 		Start-sleep -Milliseconds 100
-		#write-host $csv.count
 		$dt.clear()
 
-		$csv = Import-CSV  $outputCSV | select name,location
-		$lastUpdated = (Get-Item $outputCSV).LastWriteTime
-		#$csv = $csv | sort-object name
+		$csv = Import-CSV  $outputCSV | Select-Object name,location
+		$script:lastUpdated = (Get-Item $outputCSV).LastWriteTime
 		foreach ($i in $csv) {
 			$r = $dt.NewRow()
 			$r.$locationColumn = $i.location
@@ -502,10 +677,26 @@ if ($createList) {
 		}
 		$DataGridView1.DataSource = $null
 		$DataGridView1.DataSource = $dt
-		Set-InfoLabel -label $InfoLabel -rowCount $dt.Rows.Count -lastUpdated $lastUpdated -form $Form
+		Set-InfoLabel -label $InfoLabel -rowCount $dt.Rows.Count -lastUpdated $script:lastUpdated -form $Form
 		Align-TopRowControls -lbl $FilterBoxLabel -txt $FilterTextBox -btnPaste $PasteButton -btnRefresh $RefreshButton -info $InfoLabel
 		Update-InfoLabelPosition -label $InfoLabel -form $Form
 		$FilterTextBox.Focus()
+	}
+
+	$InfoLabel.Add_Click({
+		$infoTimestamp = Get-InfoLabelTimestamp -LabelText $InfoLabel.Text
+		$makeListTimestamp = Get-MakeListTimestamp -LogPath $makeListLog
+		if ($null -ne $infoTimestamp -and $null -ne $makeListTimestamp) {
+			if ((Get-MinuteStamp -DateValue $infoTimestamp) -ne (Get-MinuteStamp -DateValue $makeListTimestamp)) {
+				Refresh-GridData
+			}
+		}
+		Show-MakeListLogDialog -LogPath $makeListLog -Owner $Form
+	})
+
+	$RefreshButton.Add_Click(
+	{
+		Refresh-GridData
 	})
 
 	# PasteButton click
@@ -578,5 +769,5 @@ $PasteButton.Add_Click({
     #Write-Host $form.width $form.height
     [void]$Form.ShowDialog()
 
-	#$list | select name,location |  out-gridview -OutputMode Single
+	#$list |  Select-Object  name,location |  out-gridview -OutputMode Single
 }
