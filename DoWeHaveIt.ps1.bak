@@ -20,7 +20,7 @@ if ($PSVersionTable.Platform -eq "Unix") {
 	$SwitchDir = '\\whelp\SwitchRoms\'
 }
 $outputCSV = "$($scriptDir)DoWeHaveIt.csv"
-$ExcludedThings = ('___Duplicates','.trash')
+$ExcludedThings = ('___Duplicates')
 if ($createList) {
 	Write-Host 'Checking directories under media:'
 	$dirsToInclude = ('Movies','TV Shows')
@@ -36,17 +36,12 @@ if ($createList) {
 	}
 	Write-Host 'Disc List (Import)'
 	$dl = import-csv "$($discListDir)disc list.csv"
-
-	#This pulls the first column name from the CSV, which is the title of the movie/game/etc. The second column is usually "Location" but we want to be flexible in case it changes.
-	$firstColumn = ($dl[0].PSObject.Properties | Select-Object -First 1).Name
-	$xx = $dl | Select-Object -ExpandProperty $firstColumn
-
-	foreach ($i in $xx) {
-		if ($ExcludedThings -notcontains $i) {
-			$output += new-object PSObject -property @{name=$i;location='Disc List'}
+	foreach ($i in $dl) {
+		if ($ExcludedThings -notcontains $i.name) {
+			$output += new-object PSObject -property @{name=$i.name;location='Disc List'}
 		}
 	}
-
+	
 	Write-Host 'DVD Profiler (Import)'
 	[xml]$dvdProfiler = get-content "$($discListDir)Collection.xml"
 	foreach ($i in $dvdProfiler.Collection.DVD.title) {
@@ -78,21 +73,21 @@ if ($createList) {
 	}
 	Write-Host "Completed (RAR Files)"
 	foreach ($i in (gci "$CompletedDir" -File '*.rar')) {
-
+		
 		if ($ExcludedThings -notcontains $i.name) {
 			$output += new-object PSObject -property @{name=$i.name;location="Completed"}
 		}
 	}
 	Write-Host "Completed (ZIP Files)"
 	foreach ($i in (gci "$CompletedDir" -File '*.zip')) {
-
+		
 		if ($ExcludedThings -notcontains $i.name) {
 			$output += new-object PSObject -property @{name=$i.name;location="Completed"}
 		}
 	}
 	Write-Host "Completed (ISO Files)"
 	foreach ($i in (gci "$CompletedDir" -File '*.iso')) {
-
+		
 		if ($ExcludedThings -notcontains $i.name) {
 			$output += new-object PSObject -property @{name=$i.name;location="Completed"}
 		}
@@ -109,20 +104,20 @@ if ($createList) {
 			$output += new-object PSObject -property @{name=$i.name;location="GoG"}
 		}
 	}
-	$output = $output | ?{$_.name -notlike ""} | sort-object name,location | select name,location
+	$output = $output | ?{$_.name -notlike ""} | sort-object name,location | select name,location 
 	$output | Export-csv -notypeinformation $outputCSV
 	Write-Host "$($output.count) rows exported."
 } else {
-	$csv = Import-CSV  $outputCSV | select name,location
+	$csv = Import-CSV  $outputCSV | select name,location 
 	$lastUpdated = (Get-Item $outputCSV).LastWriteTime
 	$dt = New-Object System.Data.DataTable
 	$nameColumn = $dt.columns.add('Name')
 	$locationColumn = $dt.columns.add('Location')
-	foreach ($i in $csv) {
+	foreach ($i in $csv) { 
 		$r = $dt.NewRow()
 		$r.$locationColumn = $i.location
 		$r.$nameColumn = $i.name
-		$dt.Rows.Add($r)
+		$dt.Rows.Add($r) 
 	}
 	Add-Type -AssemblyName System.Windows.Forms
 	[System.Windows.Forms.Application]::EnableVisualStyles()
@@ -136,7 +131,7 @@ if ($createList) {
 	$Form.Icon                       = $Icon
 	$Form.TopMost                    = $false
 	$form.MinimumSize = New-Object System.Drawing.Size(710, 250)
-
+	
 	$FilterTextBox                   = New-Object system.Windows.Forms.TextBox
 	$FilterTextBox.multiline         = $false
 	$FilterTextBox.width             = 334
@@ -151,7 +146,7 @@ if ($createList) {
 	$FilterBoxLabel.height           = 10
 	$FilterBoxLabel.location         = New-Object System.Drawing.Point(10,8)
 	$FilterBoxLabel.Font             = New-Object System.Drawing.Font('Microsoft Sans Serif',10)
-
+		
 	$InfoLabel                  = New-Object system.Windows.Forms.Label
 	$InfoLabel.text             = $(get-date (get-item $outputCSV).lastwritetime -format "MM-dd-yyyy HH:mm")
 	$InfoLabel.AutoSize         = $true
@@ -226,7 +221,7 @@ if ($createList) {
 	$DataGridView1.height            = 340  #form - 99
 	$DataGridView1.location          = New-Object System.Drawing.Point(20,50)
 	$DataGridView1.DataSource = $dt
-	$DataGridView1.AutoSizeColumnsMode = "Fill"
+	$DataGridView1.AutoSizeColumnsMode = "Fill" 
 	$DataGridView1.RowHeadersVisible = $false
 	$DataGridView1.ReadOnly = $true
 	$DataGridView1.AllowUserToResizeColumns = $false
@@ -338,7 +333,7 @@ if ($createList) {
 			if ($res.File -and (Test-Path -LiteralPath $res.File)) {
 				Start-Process -FilePath 'explorer.exe' -ArgumentList ("/select,""$($res.File)""")
 			} elseif ($res.Folder -and (Test-Path -LiteralPath $res.Folder)) {
-				Start-Process -FilePath 'explorer.exe' -ArgumentList ("""$($res.Folder)""")
+				Start-Process -FilePath 'explorer.exe' -ArgumentList ("""$(res.Folder)""")
 			} else {
 				[System.Windows.Forms.MessageBox]::Show(
 					"Path not found for '$name' (Location: $location).",
@@ -432,7 +427,7 @@ if ($createList) {
 			$e.Handled = $true
 		}
 	})
-
+	
 	$PasteButton                         = New-Object system.Windows.Forms.Button
 	$PasteButton.text                    = "Paste"
 	$PasteButton.width                   = 78
@@ -486,19 +481,19 @@ if ($createList) {
 	{
 		#Write-Host "Click!"
 		$FilterTextBox.Text = ''
-		$InfoLabel.text             = '                Updating     '
+		$InfoLabel.text             = '                Updating     ' 
 		Start-sleep -Milliseconds 100
 		#write-host $csv.count
 		$dt.clear()
-
+		
 		$csv = Import-CSV  $outputCSV | select name,location
 		$lastUpdated = (Get-Item $outputCSV).LastWriteTime
 		#$csv = $csv | sort-object name
-		foreach ($i in $csv) {
+		foreach ($i in $csv) { 
 			$r = $dt.NewRow()
 			$r.$locationColumn = $i.location
 			$r.$nameColumn = $i.name
-			$dt.Rows.Add($r)
+			$dt.Rows.Add($r) 
 		}
 		$DataGridView1.DataSource = $null
 		$DataGridView1.DataSource = $dt
@@ -507,7 +502,7 @@ if ($createList) {
 		Update-InfoLabelPosition -label $InfoLabel -form $Form
 		$FilterTextBox.Focus()
 	})
-
+	
 	# PasteButton click
 $PasteButton.Add_Click({
     try {
@@ -568,7 +563,7 @@ $PasteButton.Add_Click({
 		Update-InfoLabelPosition -label $InfoLabel -form $this
 		#Write-Host $form.width $form.height
 	} )
-
+	
     $Form.controls.AddRange(@($FilterTextBox,$PasteButton,$RefreshButton,$FilterBoxLabel,$InfoLabel,$DataGridView1))
     # Align once the form is shown to ensure final sizes/positions
     $Form.Add_Shown({
@@ -577,6 +572,6 @@ $PasteButton.Add_Click({
     })
     #Write-Host $form.width $form.height
     [void]$Form.ShowDialog()
-
+	
 	#$list | select name,location |  out-gridview -OutputMode Single
 }
