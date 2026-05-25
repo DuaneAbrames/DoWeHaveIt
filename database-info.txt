@@ -1,0 +1,7 @@
+host: 192.168.35.7
+port: 3307
+database: DoWeHaveIt
+db_user: DoWeHaveIt
+db_pass: Se61BBRjwyfNOSjGWP2X
+db_root_user: root
+db_root_pass: wCaWLW54VC0jucGgwSXM8WtpmRY6rrUh
