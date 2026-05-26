@@ -1,7 +1,8 @@
 [CmdletBinding()]
 Param(
 	[switch]$createList = $false,
-	[switch]$TimeMachine = $false
+	[switch]$TimeMachine = $false,
+	[switch]$Music = $false
 )
 
 if ($PSVersionTable.Platform -eq 'Unix') {
@@ -27,6 +28,10 @@ $outputCSV = "$scriptDir/DoWeHaveIt.csv"
 $makeListLog = "$scriptDir/makelist.csv"
 $databaseInfoPath = "$scriptDir/database-info.txt"
 $ExcludedThings = ('___Duplicates', '.trash')
+$MusicDirName = 'mp3'
+$MusicExtensions = @('.mp3', '.flac', '.m4a', '.aac', '.ogg', '.wav', '.wma', '.opus', '.ape', '.alac')
+$RegularDatasetType = 'regular'
+$MusicDatasetType = 'music'
 $script:InfoLabelBaseColor = $null
 $script:dbConfig = $null
 $script:lastSuccessfulRunAt = $null
@@ -36,12 +41,51 @@ $script:displayedRunId = $null
 $script:isViewingHistoricalRun = $false
 $script:lastStatusMessage = $null
 $script:pollIntervalMilliseconds = 30000
+$script:activeDatasetType = if ($Music) { $MusicDatasetType } else { $RegularDatasetType }
+$script:currentDataTable = $null
 
 function Write-CreateListMessage {
 	param(
 		[string]$Message
 	)
 	Write-Host $Message
+}
+
+function Get-DatasetStateId {
+	param(
+		[string]$DatasetType
+	)
+
+	switch ($DatasetType) {
+		$MusicDatasetType { return 2 }
+		default { return 1 }
+	}
+}
+
+function Get-NormalizedDatasetType {
+	param(
+		[string]$DatasetType
+	)
+
+	if ([string]::IsNullOrWhiteSpace($DatasetType)) {
+		return $RegularDatasetType
+	}
+
+	switch ($DatasetType.Trim().ToLowerInvariant()) {
+		'music' { return $MusicDatasetType }
+		default { return $RegularDatasetType }
+	}
+}
+
+function Get-DatasetDisplayName {
+	param(
+		[string]$DatasetType
+	)
+
+	switch (Get-NormalizedDatasetType $DatasetType) {
+		$MusicDatasetType { return 'Music' }
+		default { return 'Media' }
+	}
 }
 
 function Escape-SqlString {
@@ -236,10 +280,47 @@ function Undo-AppTransaction {
 	} catch {}
 }
 
+function Test-ColumnExists {
+	param(
+		[string]$TableName,
+		[string]$ColumnName
+	)
+
+	$config = Get-DatabaseConfig
+	$result = Invoke-AppScalarValue @"
+SELECT COUNT(*)
+FROM information_schema.columns
+WHERE table_schema = $(Escape-SqlString $config.Database)
+	AND table_name = $(Escape-SqlString $TableName)
+	AND column_name = $(Escape-SqlString $ColumnName);
+"@
+
+	return ([int]$result) -gt 0
+}
+
+function Test-IndexExists {
+	param(
+		[string]$TableName,
+		[string]$IndexName
+	)
+
+	$config = Get-DatabaseConfig
+	$result = Invoke-AppScalarValue @"
+SELECT COUNT(*)
+FROM information_schema.statistics
+WHERE table_schema = $(Escape-SqlString $config.Database)
+	AND table_name = $(Escape-SqlString $TableName)
+	AND index_name = $(Escape-SqlString $IndexName);
+"@
+
+	return ([int]$result) -gt 0
+}
+
 function Initialize-DatabaseSchema {
 	Invoke-AppUpdate @"
 CREATE TABLE IF NOT EXISTS inventory_runs (
 	run_id BIGINT NOT NULL AUTO_INCREMENT,
+	dataset_type VARCHAR(32) NOT NULL DEFAULT 'regular',
 	started_at DATETIME NOT NULL,
 	completed_at DATETIME NULL,
 	status VARCHAR(32) NOT NULL,
@@ -248,10 +329,18 @@ CREATE TABLE IF NOT EXISTS inventory_runs (
 	error_message TEXT NULL,
 	retention_class VARCHAR(32) NULL,
 	PRIMARY KEY (run_id),
+	KEY idx_inventory_runs_dataset (dataset_type),
 	KEY idx_inventory_runs_completed (completed_at),
 	KEY idx_inventory_runs_status (status)
 );
 "@
+
+	if (-not (Test-ColumnExists -TableName 'inventory_runs' -ColumnName 'dataset_type')) {
+		Invoke-AppUpdate "ALTER TABLE inventory_runs ADD COLUMN dataset_type VARCHAR(32) NOT NULL DEFAULT 'regular' AFTER run_id;"
+	}
+	if (-not (Test-IndexExists -TableName 'inventory_runs' -IndexName 'idx_inventory_runs_dataset')) {
+		Invoke-AppUpdate "ALTER TABLE inventory_runs ADD INDEX idx_inventory_runs_dataset (dataset_type);"
+	}
 
 	Invoke-AppUpdate @"
 CREATE TABLE IF NOT EXISTS inventory_run_sources (
@@ -293,20 +382,58 @@ WHERE NOT EXISTS (
 	WHERE state_id = 1
 );
 "@
+
+	Invoke-AppUpdate @"
+INSERT INTO inventory_state (state_id, current_run_id, last_successful_run_at, last_row_count)
+SELECT 2, NULL, NULL, 0
+WHERE NOT EXISTS (
+	SELECT 1
+	FROM inventory_state
+	WHERE state_id = 2
+);
+"@
 }
 
 function Get-SystemTimestamp {
 	return Get-Date
 }
 
+function Get-LatestSuccessfulRunAge {
+	param(
+		[string]$DatasetType
+	)
+
+	$meta = Get-CurrentPublishedRunMetadata -DatasetType $DatasetType
+	if (-not $meta -or -not $meta.LastSuccessfulRunAt) {
+		return $null
+	}
+
+	return (Get-Date) - $meta.LastSuccessfulRunAt
+}
+
+function Test-MusicScanNeeded {
+	$musicAge = Get-LatestSuccessfulRunAge -DatasetType $MusicDatasetType
+	if ($null -eq $musicAge) {
+		return $true
+	}
+
+	return $musicAge.TotalHours -gt 24
+}
+
 function Get-CurrentPublishedRunMetadata {
+	param(
+		[string]$DatasetType = $script:activeDatasetType
+	)
+
+	$normalizedDatasetType = Get-NormalizedDatasetType $DatasetType
+	$stateId = Get-DatasetStateId $normalizedDatasetType
 	$rows = ConvertFrom-DataTable (Invoke-AppQuery @"
 SELECT
 	s.current_run_id,
 	s.last_successful_run_at,
 	s.last_row_count
 FROM inventory_state s
-WHERE s.state_id = 1;
+WHERE s.state_id = $stateId;
 "@)
 
 	if ($rows.Count -eq 0) {
@@ -315,6 +442,7 @@ WHERE s.state_id = 1;
 
 	$row = $rows[0]
 	return [pscustomobject]@{
+		DatasetType = $normalizedDatasetType
 		RunId = if ($null -eq $row.current_run_id -or $row.current_run_id -eq [DBNull]::Value) { $null } else { [int64]$row.current_run_id }
 		LastSuccessfulRunAt = if ($null -eq $row.last_successful_run_at -or $row.last_successful_run_at -eq [DBNull]::Value) { $null } else { [datetime]$row.last_successful_run_at }
 		RowCount = if ($null -eq $row.last_row_count -or $row.last_row_count -eq [DBNull]::Value) { 0 } else { [int]$row.last_row_count }
@@ -324,18 +452,22 @@ WHERE s.state_id = 1;
 function Get-RunMetadataById {
 	param(
 		[Parameter(Mandatory = $true)]
-		[int64]$RunId
+		[int64]$RunId,
+		[string]$DatasetType = $script:activeDatasetType
 	)
 
+	$normalizedDatasetType = Get-NormalizedDatasetType $DatasetType
 	$rows = ConvertFrom-DataTable (Invoke-AppQuery @"
 SELECT
 	run_id,
+	dataset_type,
 	started_at,
 	completed_at,
 	status,
 	total_rows
 FROM inventory_runs
-WHERE run_id = $RunId;
+WHERE run_id = $RunId
+	AND dataset_type = $(Escape-SqlString $normalizedDatasetType);
 "@)
 
 	if ($rows.Count -eq 0) {
@@ -345,6 +477,7 @@ WHERE run_id = $RunId;
 	$row = $rows[0]
 	return [pscustomobject]@{
 		RunId = [int64]$row.run_id
+		DatasetType = [string]$row.dataset_type
 		StartedAt = if ($row.started_at -eq [DBNull]::Value) { $null } else { [datetime]$row.started_at }
 		CompletedAt = if ($row.completed_at -eq [DBNull]::Value) { $null } else { [datetime]$row.completed_at }
 		Status = [string]$row.status
@@ -385,27 +518,37 @@ ORDER BY display_order;
 }
 
 function Get-CompletedRunsForPicker {
+	param(
+		[string]$DatasetType = $script:activeDatasetType
+	)
+
+	$normalizedDatasetType = Get-NormalizedDatasetType $DatasetType
 	return @(ConvertFrom-DataTable (Invoke-AppQuery @"
 SELECT
 	run_id,
+	dataset_type,
 	completed_at,
 	total_rows
 FROM inventory_runs
 WHERE status = 'completed'
+	AND dataset_type = $(Escape-SqlString $normalizedDatasetType)
 ORDER BY completed_at DESC, run_id DESC;
 "@))
 }
 
 function Get-PreviousCompletedRunId {
 	param(
-		[int64]$CurrentRunId
+		[int64]$CurrentRunId,
+		[string]$DatasetType = $script:activeDatasetType
 	)
 
+	$normalizedDatasetType = Get-NormalizedDatasetType $DatasetType
 	$whereClause = if ($CurrentRunId) { "AND run_id <> $CurrentRunId" } else { '' }
 	$result = Invoke-AppScalarValue @"
 SELECT run_id
 FROM inventory_runs
 WHERE status = 'completed'
+	AND dataset_type = $(Escape-SqlString $normalizedDatasetType)
 $whereClause
 ORDER BY completed_at DESC, run_id DESC
 LIMIT 1;
@@ -582,6 +725,49 @@ function Get-InventorySnapshot {
 	}))
 }
 
+function Get-MusicInventorySnapshot {
+	$musicRoot = Join-Path $mediaDir $MusicDirName
+	if (-not (Test-Path -LiteralPath $musicRoot)) {
+		throw "Music directory not found: $musicRoot"
+	}
+
+	Write-CreateListMessage "Checking music files under ${MusicDirName}:"
+	$output = @()
+	foreach ($file in (Get-ChildItem $musicRoot -Recurse -File | Where-Object { $MusicExtensions -contains $_.Extension.ToLowerInvariant() })) {
+		if ($ExcludedThings -contains $file.Name) {
+			continue
+		}
+
+		$relativeDirectory = $file.DirectoryName.Replace($mediaDir, '').TrimStart('\', '/')
+		if ([string]::IsNullOrWhiteSpace($relativeDirectory)) {
+			$relativeDirectory = $MusicDirName
+		}
+
+		$output += New-Object PSObject -Property @{
+			name = $file.Name
+			location = ($relativeDirectory -replace '\\', '/')
+		}
+	}
+
+	$output = $output |
+		Sort-Object name, location |
+		Select-Object name, location
+
+	$sourceCount = $output.Count
+	Write-CreateListMessage "Music Files - $sourceCount"
+	Write-CreateListMessage "$sourceCount music rows exported."
+
+	$sourcesArray = @(
+		[pscustomobject]@{ Source = 'Music Files'; Rows = $sourceCount },
+		[pscustomobject]@{ Source = 'TOTAL'; Rows = $sourceCount }
+	)
+
+	return (New-Object PSObject -Property ([ordered]@{
+		Items = @($output)
+		Sources = $sourcesArray
+	}))
+}
+
 function Insert-InventoryItemsBatch {
 	param(
 		[int64]$RunId,
@@ -633,16 +819,23 @@ $($values -join ",`n");
 }
 
 function Get-KeeperRunIds {
-	$currentMeta = Get-CurrentPublishedRunMetadata
+	param(
+		[string]$DatasetType = $script:activeDatasetType
+	)
+
+	$normalizedDatasetType = Get-NormalizedDatasetType $DatasetType
+	$currentMeta = Get-CurrentPublishedRunMetadata -DatasetType $normalizedDatasetType
 	$currentRunId = if ($currentMeta) { $currentMeta.RunId } else { $null }
-	$previousRunId = Get-PreviousCompletedRunId -CurrentRunId $currentRunId
+	$previousRunId = Get-PreviousCompletedRunId -CurrentRunId $currentRunId -DatasetType $normalizedDatasetType
 
 	$allRuns = ConvertFrom-DataTable (Invoke-AppQuery @"
 SELECT
 	run_id,
+	dataset_type,
 	completed_at,
 	status
 FROM inventory_runs
+WHERE dataset_type = $(Escape-SqlString $normalizedDatasetType)
 ORDER BY completed_at ASC, run_id ASC;
 "@)
 
@@ -702,11 +895,17 @@ ORDER BY completed_at ASC, run_id ASC;
 }
 
 function Invoke-SnapshotCleanup {
-	$keepers = Get-KeeperRunIds
+	param(
+		[string]$DatasetType = $script:activeDatasetType
+	)
+
+	$normalizedDatasetType = Get-NormalizedDatasetType $DatasetType
+	$keepers = Get-KeeperRunIds -DatasetType $normalizedDatasetType
 	$completedRuns = ConvertFrom-DataTable (Invoke-AppQuery @"
 SELECT run_id
 FROM inventory_runs
-WHERE status = 'completed';
+WHERE status = 'completed'
+	AND dataset_type = $(Escape-SqlString $normalizedDatasetType);
 "@)
 
 	$deleteIds = @()
@@ -733,11 +932,14 @@ function Publish-InventorySnapshot {
 		[object[]]$Items,
 		[Parameter(Mandatory = $true)]
 		[object[]]$Sources,
+		[string]$DatasetType = $script:activeDatasetType,
 		[datetime]$StartedAt = (Get-Date),
 		[Nullable[datetime]]$CompletedAt = $null,
 		[switch]$IsBootstrap
 	)
 
+	$normalizedDatasetType = Get-NormalizedDatasetType $DatasetType
+	$stateId = Get-DatasetStateId $normalizedDatasetType
 	$workerHost = [System.Environment]::MachineName
 	$runId = $null
 	$startedAtSql = ConvertTo-MySqlDateTimeLiteral $StartedAt
@@ -748,8 +950,9 @@ function Publish-InventorySnapshot {
 		Start-AppTransaction
 
 		Invoke-AppUpdate @"
-INSERT INTO inventory_runs (started_at, completed_at, status, total_rows, worker_host, error_message, retention_class)
+INSERT INTO inventory_runs (dataset_type, started_at, completed_at, status, total_rows, worker_host, error_message, retention_class)
 VALUES (
+	$(Escape-SqlString $normalizedDatasetType),
 	$startedAtSql,
 	NULL,
 	'running',
@@ -782,7 +985,7 @@ SET
 	current_run_id = $runId,
 	last_successful_run_at = $completedAtSql,
 	last_row_count = $($Items.Count)
-WHERE state_id = 1;
+WHERE state_id = $stateId;
 "@
 
 		Complete-AppTransaction
@@ -805,12 +1008,12 @@ WHERE run_id = $runId;
 		throw
 	}
 
-	Invoke-SnapshotCleanup
+	Invoke-SnapshotCleanup -DatasetType $normalizedDatasetType
 	return $runId
 }
 
 function Initialize-BootstrapData {
-	$currentMeta = Get-CurrentPublishedRunMetadata
+	$currentMeta = Get-CurrentPublishedRunMetadata -DatasetType $RegularDatasetType
 	if ($currentMeta -and $currentMeta.RunId) {
 		return
 	}
@@ -831,7 +1034,7 @@ function Initialize-BootstrapData {
 	}
 
 	$completedAt = (Get-Item -LiteralPath $outputCSV).LastWriteTime
-	Publish-InventorySnapshot -Items $csvItems -Sources $sources -StartedAt $completedAt -CompletedAt $completedAt -IsBootstrap | Out-Null
+	Publish-InventorySnapshot -Items $csvItems -Sources $sources -DatasetType $RegularDatasetType -StartedAt $completedAt -CompletedAt $completedAt -IsBootstrap | Out-Null
 }
 
 function Initialize-AppDatabase {
@@ -873,6 +1076,7 @@ function Set-InfoLabel {
 		$DisplayTimestamp,
 		$HeartbeatTimestamp,
 		[System.Windows.Forms.Form]$Form,
+		[string]$DatasetType = $script:activeDatasetType,
 		[switch]$HistoricalRun,
 		[string]$StatusMessage
 	)
@@ -901,8 +1105,9 @@ function Set-InfoLabel {
 		'No data'
 	}
 
-	$prefix = if ($HistoricalRun) { 'Snapshot' } else { 'Current' }
-	$text = "$RowCount Rows - $prefix - $displayText"
+	$prefix = if ($HistoricalRun) { 'Snapshot' } else { 'OK' }
+	$datasetLabel = Get-DatasetDisplayName $DatasetType
+	$text = "$RowCount r - $datasetLabel - $prefix - $displayText"
 	if (-not [string]::IsNullOrWhiteSpace($StatusMessage)) {
 		$text = "$text - $StatusMessage"
 	}
@@ -1118,13 +1323,15 @@ function Show-RunPickerDialog {
 	param(
 		[System.Windows.Forms.Form]$Owner,
 		[System.Drawing.Icon]$Icon,
-		[int64]$CurrentPublishedRunId
+		[int64]$CurrentPublishedRunId,
+		[string]$DatasetType = $script:activeDatasetType
 	)
 
-	$runs = Get-CompletedRunsForPicker
+	$normalizedDatasetType = Get-NormalizedDatasetType $DatasetType
+	$runs = Get-CompletedRunsForPicker -DatasetType $normalizedDatasetType
 	if ($runs.Count -eq 0) {
 		[System.Windows.Forms.MessageBox]::Show(
-			'No completed snapshots are available yet.',
+			"No completed $(Get-DatasetDisplayName $normalizedDatasetType) snapshots are available yet.",
 			'Time Machine',
 			[System.Windows.Forms.MessageBoxButtons]::OK,
 			[System.Windows.Forms.MessageBoxIcon]::Information
@@ -1160,7 +1367,7 @@ function Show-RunPickerDialog {
 	}
 
 	$pickerForm = New-Object System.Windows.Forms.Form
-	$pickerForm.Text = 'Time Machine'
+	$pickerForm.Text = "Time Machine - $(Get-DatasetDisplayName $normalizedDatasetType)"
 	$pickerForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
 	$pickerForm.ClientSize = New-Object System.Drawing.Size(760, 520)
 	$pickerForm.MinimumSize = New-Object System.Drawing.Size(620, 350)
@@ -1264,21 +1471,25 @@ function Start-UiMode {
 		return
 	}
 
-	$state = Get-CurrentPublishedRunMetadata
+	$state = Get-CurrentPublishedRunMetadata -DatasetType $script:activeDatasetType
 	if (-not $state -or -not $state.RunId) {
-		Show-ConnectionFailure -Message 'No published inventory run is available.' -Owner $null
-		return
+		$items = @()
+		$script:currentDataTable = Convert-ItemsToDataTable -Items $items
+		$script:lastSuccessfulRunAt = $null
+		$script:currentPublishedRunId = $null
+		$script:displayedRunId = $null
+		$script:displayedRunTimestamp = $null
+	} else {
+		$items = Get-RunItems -RunId $state.RunId
+		$script:currentDataTable = Convert-ItemsToDataTable -Items $items
+		$script:lastSuccessfulRunAt = $state.LastSuccessfulRunAt
+		$script:currentPublishedRunId = $state.RunId
+		$script:displayedRunId = $state.RunId
+		$script:displayedRunTimestamp = $state.LastSuccessfulRunAt
 	}
-
-	$items = Get-RunItems -RunId $state.RunId
-	$dt = Convert-ItemsToDataTable -Items $items
-	$script:lastSuccessfulRunAt = $state.LastSuccessfulRunAt
-	$script:currentPublishedRunId = $state.RunId
-	$script:displayedRunId = $state.RunId
-	$script:displayedRunTimestamp = $state.LastSuccessfulRunAt
 	$script:isViewingHistoricalRun = $false
 
-	$FormStartWidth = if ($TimeMachine) { 965 } else { 875 }
+	$FormStartWidth = if ($TimeMachine) { 1065 } else { 940 }
 
 	$Form = New-Object system.Windows.Forms.Form
 	$Form.ClientSize = New-Object System.Drawing.Point($FormStartWidth, 400)
@@ -1313,7 +1524,7 @@ function Start-UiMode {
 	$DataGridView1.Width = $FormStartWidth - 40
 	$DataGridView1.Height = 340
 	$DataGridView1.Location = New-Object System.Drawing.Point(20, 50)
-	$DataGridView1.DataSource = $dt
+	$DataGridView1.DataSource = $script:currentDataTable
 	$DataGridView1.AutoSizeColumnsMode = 'Fill'
 	$DataGridView1.RowHeadersVisible = $false
 	$DataGridView1.ReadOnly = $true
@@ -1346,13 +1557,20 @@ function Start-UiMode {
 	$ClearButton.Location = New-Object System.Drawing.Point(477, 6)
 	$ClearButton.Font = New-Object System.Drawing.Font('Microsoft Sans Serif', 10)
 
+	$MusicCheckbox = New-Object System.Windows.Forms.CheckBox
+	$MusicCheckbox.Text = 'Music'
+	$MusicCheckbox.AutoSize = $true
+	$MusicCheckbox.Location = New-Object System.Drawing.Point(565, 8)
+	$MusicCheckbox.Font = New-Object System.Drawing.Font('Microsoft Sans Serif', 10)
+	$MusicCheckbox.Checked = ($script:activeDatasetType -eq $MusicDatasetType)
+
 	$TimeMachineButton = $null
 	if ($TimeMachine) {
 		$TimeMachineButton = New-Object system.Windows.Forms.Button
 		$TimeMachineButton.Text = 'Time Machine'
 		$TimeMachineButton.Width = 105
 		$TimeMachineButton.Height = 21
-		$TimeMachineButton.Location = New-Object System.Drawing.Point(562, 6)
+		$TimeMachineButton.Location = New-Object System.Drawing.Point(640, 6)
 		$TimeMachineButton.Font = New-Object System.Drawing.Font('Microsoft Sans Serif', 10)
 	}
 
@@ -1360,7 +1578,7 @@ function Start-UiMode {
 	$PollTimer.Interval = $script:pollIntervalMilliseconds
 
 	$ApplyFilter = {
-		$dv = New-Object System.Data.DataView($dt)
+		$dv = New-Object System.Data.DataView($script:currentDataTable)
 		$terms = $FilterTextBox.Text -split '\s+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
 		if ($terms.Count -eq 0) {
 			$dv.RowFilter = $null
@@ -1369,7 +1587,7 @@ function Start-UiMode {
 			$dv.RowFilter = ($escapedTerms | ForEach-Object { "(Name LIKE '%$_%' OR Location LIKE '%$_%')" }) -join ' AND '
 		}
 		$DataGridView1.DataSource = $dv
-		Set-InfoLabel -Label $InfoLabel -RowCount $dv.Count -DisplayTimestamp $script:displayedRunTimestamp -HeartbeatTimestamp $script:lastSuccessfulRunAt -Form $Form -HistoricalRun:$script:isViewingHistoricalRun -StatusMessage $script:lastStatusMessage
+		Set-InfoLabel -Label $InfoLabel -RowCount $dv.Count -DisplayTimestamp $script:displayedRunTimestamp -HeartbeatTimestamp $script:lastSuccessfulRunAt -Form $Form -DatasetType $script:activeDatasetType -HistoricalRun:$script:isViewingHistoricalRun -StatusMessage $script:lastStatusMessage
 	}
 
 	$LoadRunIntoGrid = {
@@ -1381,11 +1599,11 @@ function Start-UiMode {
 
 		$itemsForRun = Get-RunItems -RunId $RunId
 		$newTable = Convert-ItemsToDataTable -Items $itemsForRun
-		$dt = $newTable
+		$script:currentDataTable = $newTable
 		$script:displayedRunId = $RunId
 		$script:displayedRunTimestamp = if ($null -ne $DisplayTimestamp -and $DisplayTimestamp -ne [DBNull]::Value) { [datetime]$DisplayTimestamp } else { $null }
 		$script:isViewingHistoricalRun = $HistoricalView.IsPresent
-		$DataGridView1.DataSource = $dt
+		$DataGridView1.DataSource = $script:currentDataTable
 		& $ApplyFilter
 		$FilterTextBox.Focus()
 		$FilterTextBox.SelectionStart = $FilterTextBox.Text.Length
@@ -1393,8 +1611,15 @@ function Start-UiMode {
 
 	$ReloadCurrentRun = {
 		try {
-			$latest = Get-CurrentPublishedRunMetadata
+			$latest = Get-CurrentPublishedRunMetadata -DatasetType $script:activeDatasetType
 			if (-not $latest -or -not $latest.RunId) {
+				$script:lastSuccessfulRunAt = $null
+				$script:currentPublishedRunId = $null
+				$script:displayedRunId = $null
+				$script:displayedRunTimestamp = $null
+				$script:currentDataTable = Convert-ItemsToDataTable -Items @()
+				$DataGridView1.DataSource = $script:currentDataTable
+				& $ApplyFilter
 				return
 			}
 
@@ -1621,10 +1846,27 @@ function Start-UiMode {
 		$FilterTextBox.SelectionStart = 0
 	})
 
+	$MusicCheckbox.Add_CheckedChanged({
+		try {
+			$script:activeDatasetType = if ($MusicCheckbox.Checked) { $MusicDatasetType } else { $RegularDatasetType }
+			$script:isViewingHistoricalRun = $false
+			$script:lastStatusMessage = $null
+			$FilterTextBox.Text = ''
+			& $ReloadCurrentRun
+		} catch {
+			[System.Windows.Forms.MessageBox]::Show(
+				"Could not switch datasets.`r`n$($_.Exception.Message)",
+				'Dataset Switch',
+				[System.Windows.Forms.MessageBoxButtons]::OK,
+				[System.Windows.Forms.MessageBoxIcon]::Error
+			) | Out-Null
+		}
+	})
+
 	if ($TimeMachineButton) {
 		$TimeMachineButton.Add_Click({
 			try {
-				$selectedRunId = Show-RunPickerDialog -Owner $Form -Icon $Icon -CurrentPublishedRunId $script:currentPublishedRunId
+				$selectedRunId = Show-RunPickerDialog -Owner $Form -Icon $Icon -CurrentPublishedRunId $script:currentPublishedRunId -DatasetType $script:activeDatasetType
 				if (-not $selectedRunId) {
 					return
 				}
@@ -1636,7 +1878,7 @@ function Start-UiMode {
 					return
 				}
 
-				$selectedMeta = Get-RunMetadataById -RunId $selectedRunId
+				$selectedMeta = Get-RunMetadataById -RunId $selectedRunId -DatasetType $script:activeDatasetType
 				if (-not $selectedMeta) {
 					return
 				}
@@ -1657,7 +1899,7 @@ function Start-UiMode {
 	$PollTimer.Add_Tick({
 		if ($script:isViewingHistoricalRun) {
 			try {
-				$latest = Get-CurrentPublishedRunMetadata
+				$latest = Get-CurrentPublishedRunMetadata -DatasetType $script:activeDatasetType
 				if ($latest) {
 					$script:lastSuccessfulRunAt = $latest.LastSuccessfulRunAt
 					$script:currentPublishedRunId = $latest.RunId
@@ -1671,8 +1913,15 @@ function Start-UiMode {
 		}
 
 		try {
-			$latest = Get-CurrentPublishedRunMetadata
+			$latest = Get-CurrentPublishedRunMetadata -DatasetType $script:activeDatasetType
 			if (-not $latest -or -not $latest.RunId) {
+				$script:lastSuccessfulRunAt = $null
+				$script:currentPublishedRunId = $null
+				$script:displayedRunId = $null
+				$script:displayedRunTimestamp = $null
+				$script:currentDataTable = Convert-ItemsToDataTable -Items @()
+				$DataGridView1.DataSource = $script:currentDataTable
+				& $ApplyFilter
 				return
 			}
 
@@ -1692,7 +1941,7 @@ function Start-UiMode {
 		}
 	})
 
-	$topRowControls = @($FilterBoxLabel, $FilterTextBox, $PasteButton, $ClearButton, $InfoLabel)
+	$topRowControls = @($FilterBoxLabel, $FilterTextBox, $PasteButton, $ClearButton, $MusicCheckbox, $InfoLabel)
 	if ($TimeMachineButton) {
 		$topRowControls += $TimeMachineButton
 	}
@@ -1706,7 +1955,7 @@ function Start-UiMode {
 		Update-InfoLabelPosition -Label $InfoLabel -Form $this
 	})
 
-	$controls = @($FilterTextBox, $PasteButton, $ClearButton, $FilterBoxLabel, $InfoLabel, $DataGridView1)
+	$controls = @($FilterTextBox, $PasteButton, $ClearButton, $MusicCheckbox, $FilterBoxLabel, $InfoLabel, $DataGridView1)
 	if ($TimeMachineButton) {
 		$controls += $TimeMachineButton
 	}
@@ -1748,8 +1997,25 @@ function Start-UiMode {
 
 function Start-WorkerMode {
 	Initialize-AppDatabase
-	$snapshot = Get-InventorySnapshot
-	$null = Publish-InventorySnapshot -Items $snapshot.Items -Sources $snapshot.Sources
+
+	if ($Music) {
+		$script:activeDatasetType = $MusicDatasetType
+		$musicSnapshot = Get-MusicInventorySnapshot
+		$null = Publish-InventorySnapshot -Items $musicSnapshot.Items -Sources $musicSnapshot.Sources -DatasetType $MusicDatasetType
+		return
+	}
+
+	$script:activeDatasetType = $RegularDatasetType
+	$regularSnapshot = Get-InventorySnapshot
+	$null = Publish-InventorySnapshot -Items $regularSnapshot.Items -Sources $regularSnapshot.Sources -DatasetType $RegularDatasetType
+
+	if (Test-MusicScanNeeded) {
+		Write-CreateListMessage 'Latest music scan is older than 24 hours. Running music snapshot.'
+		$musicSnapshot = Get-MusicInventorySnapshot
+		$null = Publish-InventorySnapshot -Items $musicSnapshot.Items -Sources $musicSnapshot.Sources -DatasetType $MusicDatasetType
+	} else {
+		Write-CreateListMessage 'Skipping music snapshot. Latest music scan is less than 24 hours old.'
+	}
 }
 
 try {
