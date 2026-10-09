@@ -21,6 +21,9 @@ if ($PSVersionTable.Platform -eq 'Unix') {
 $outputCSV = "$scriptDir/DoWeHaveIt.csv"
 $makeListLog = "$scriptDir/makelist.csv"
 $databaseInfoPath = "$scriptDir/database-info.txt"
+if ($PSVersionTable.Platform -eq 'Unix' -and (Test-Path -LiteralPath "$PSScriptRoot/database-info.txt")) {
+	$databaseInfoPath = "$PSScriptRoot/database-info.txt"
+}
 $ExcludedThings = ('___Duplicates', '.trash')
 $MusicDirName = 'mp3'
 $MusicExtensions = @('.mp3', '.flac', '.m4a', '.aac', '.ogg', '.wav', '.wma', '.opus', '.ape', '.alac')

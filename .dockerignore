@@ -1,0 +1,9 @@
+# Allowlist: application scripts, datasets, credentials and Git history never enter the build context.
+**
+!Dockerfile
+!container/
+!container/**
+!tests/
+!tests/**
+**/__pycache__/**
+**/*.pyc

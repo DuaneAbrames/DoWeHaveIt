@@ -1,0 +1,6 @@
+#!/bin/bash
+set -euo pipefail
+umask 077
+python3 /opt/dowehaveit/scheduler.py --check-config
+python3 /opt/dowehaveit/preflight.py --startup
+exec python3 /opt/dowehaveit/scheduler.py

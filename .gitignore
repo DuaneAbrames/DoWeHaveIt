@@ -1,3 +1,6 @@
 DoWeHaveEpisodes.csv
 DoWeHaveIt.csv
+__pycache__/
+*.pyc
+.env
 
