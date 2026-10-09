@@ -57,6 +57,13 @@ class RuntimeTests(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == 'linux', 'flock and process-group tests require Linux')
 class LinuxExecutionTests(unittest.TestCase):
+    def test_password_reading_matches_powershell_bom_detection(self):
+        from run import passwords
+        for encoding in ('utf-8', 'utf-8-sig', 'utf-16', 'utf-32'):
+            data = 'host: example\ndb_pass: secret:with:colons\n'.encode(encoding)
+            with patch.object(Path, 'is_file', return_value=True), patch.object(Path, 'read_bytes', return_value=data):
+                self.assertEqual(passwords(), [b'secret:with:colons'])
+
     def test_password_redaction_across_output_chunks(self):
         from run import Redactor
         password = b's3cret-password'

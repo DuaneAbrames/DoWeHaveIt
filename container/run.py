@@ -35,7 +35,11 @@ def passwords():
         config = Path('/mnt/user/bigone/scripts/DoWeHaveIt/database-info.txt')
     try:
         result = []
-        for line in config.read_text(encoding='utf-8-sig').splitlines():
+        data = config.read_bytes()
+        # Match PowerShell's BOM-aware text reading for existing Windows-created files.
+        encoding = ('utf-32' if data.startswith((b'\xff\xfe\x00\x00', b'\x00\x00\xfe\xff')) else
+                    'utf-16' if data.startswith((b'\xff\xfe', b'\xfe\xff')) else 'utf-8-sig')
+        for line in data.decode(encoding, errors='replace').splitlines():
             match = re.match(r'^\s*db_pass:\s*(.*)$', line, re.IGNORECASE)
             if match:
                 result.append(match[1].strip().encode())
