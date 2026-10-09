@@ -76,7 +76,7 @@ def main():
             stopping.wait(0.25)
     finally:
         log('shutdown requested; stopping active worker')
-        stop_active_manual()
+        active = stop_active_manual()
         for child in children:
             try:
                 os.killpg(child.pid, signal.SIGTERM)
@@ -89,6 +89,10 @@ def main():
             except subprocess.TimeoutExpired:
                 os.killpg(child.pid, signal.SIGKILL)
                 child.wait()
+        # A docker-exec wrapper is not a scheduler child. Give it time to forward
+        # SIGTERM and finish before PID 1 exits and Docker kills remaining tasks.
+        while active and proc_identity(active['pid']) == active['identity'] and time.monotonic() < deadline:
+            time.sleep(0.1)
         (STATE / 'scheduler.json').unlink(missing_ok=True)
     return 0
 

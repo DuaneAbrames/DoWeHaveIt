@@ -125,6 +125,43 @@ class LinuxExecutionTests(unittest.TestCase):
                     first.kill()
                 first.communicate()
 
+    def test_disabled_scheduler_health_and_manual_shutdown(self):
+        module_dir = str(Path(sys.modules['runtime'].__file__).resolve().parent)
+        with tempfile.TemporaryDirectory() as directory:
+            manual = self.fixture(directory, duration=60)
+            active = Path(directory) / 'state/active.json'
+            deadline = time.monotonic() + 5
+            while not active.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(active.exists())
+            program = ('import os,sys; from pathlib import Path; '
+                       'sys.path.insert(0,sys.argv[1]); import runtime,scheduler; '
+                       'runtime.STATE=Path(sys.argv[2]); scheduler.STATE=runtime.STATE; '
+                       'os.environ["SCHEDULE_FREQUENCY"]="0"; sys.argv=["scheduler"]; scheduler.main()')
+            scheduler = subprocess.Popen([sys.executable, '-c', program, module_dir, str(active.parent)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            try:
+                state = active.parent / 'scheduler.json'
+                deadline = time.monotonic() + 5
+                while not state.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(state.exists())
+                import healthcheck
+                with patch.object(healthcheck, 'STATE', active.parent), patch.object(healthcheck.shutil, 'which', return_value='/bin/true'):
+                    self.assertEqual(healthcheck.main(), 0)
+                scheduler.terminate()
+                manual.communicate(timeout=20)
+                output, _ = scheduler.communicate(timeout=30)
+                self.assertEqual(scheduler.returncode, 0)
+                self.assertIn(b'automatic scheduling disabled', output)
+                self.assertEqual(manual.returncode, 143)
+                self.assertFalse(state.exists())
+                self.assertFalse(active.exists())
+            finally:
+                for process in (scheduler, manual):
+                    if process.poll() is None:
+                        process.kill()
+                    process.communicate()
+
 
 if __name__ == '__main__':
     unittest.main()

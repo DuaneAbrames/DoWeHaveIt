@@ -76,8 +76,10 @@ def stop_active_manual():
         active = json.loads((STATE / 'active.json').read_text())
         if proc_identity(active['pid']) == active['identity']:
             os.kill(active['pid'], signal.SIGTERM)
+            return active
     except (OSError, ValueError, KeyError):
         pass
+    return None
 
 
 def retain_logs(days, now=None, directory=None):
