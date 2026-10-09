@@ -14,6 +14,7 @@ if ($PSVersionTable.Platform -eq 'Unix') {
 	$SteamUnlockedDir = '/mnt/user/bigone/Bittorrent/Completed/SteamUnlocked/'
 	$SwitchDir = '/mnt/remotes/WHELP_SwitchRoms/'
 	$createList = $true
+	renice 10 -p $PID
 } else {
 	$mediaDir = 'R:/'
 	$scriptDir = 'S:/scripts/DoWeHaveIt/'
@@ -40,7 +41,10 @@ $script:currentPublishedRunId = $null
 $script:displayedRunId = $null
 $script:isViewingHistoricalRun = $false
 $script:lastStatusMessage = $null
-$script:pollIntervalMilliseconds = 30000
+$script:pollIntervalMilliseconds = 300000
+$script:uiIdleThresholdMilliseconds = 3000000
+$script:lastUiActivityAt = [datetime]::MinValue
+$script:pendingGridRefresh = $null
 $script:activeDatasetType = if ($Music) { $MusicDatasetType } else { $RegularDatasetType }
 $script:currentDataTable = $null
 
@@ -1577,6 +1581,109 @@ function Start-UiMode {
 	$PollTimer = New-Object System.Windows.Forms.Timer
 	$PollTimer.Interval = $script:pollIntervalMilliseconds
 
+	$UiIdleTimer = New-Object System.Windows.Forms.Timer
+	$UiIdleTimer.Interval = 1000
+
+	$UpdateInfoDisplay = {
+		$view = $DataGridView1.DataSource
+		$rowCount = if ($view -is [System.Data.DataView]) { $view.Count } elseif ($script:currentDataTable) { $script:currentDataTable.Rows.Count } else { 0 }
+		Set-InfoLabel -Label $InfoLabel -RowCount $rowCount -DisplayTimestamp $script:displayedRunTimestamp -HeartbeatTimestamp $script:lastSuccessfulRunAt -Form $Form -DatasetType $script:activeDatasetType -HistoricalRun:$script:isViewingHistoricalRun -StatusMessage $script:lastStatusMessage
+	}
+
+	$MarkUiActivity = {
+		$script:lastUiActivityAt = Get-Date
+	}
+
+	$IsUiIdle = {
+		if ($script:lastUiActivityAt -eq [datetime]::MinValue) {
+			return $true
+		}
+
+		return (((Get-Date) - $script:lastUiActivityAt).TotalMilliseconds -ge $script:uiIdleThresholdMilliseconds)
+	}
+
+	$ClearPendingGridRefresh = {
+		$script:pendingGridRefresh = $null
+	}
+
+	$ApplyPendingGridRefresh = {
+		if ($null -eq $script:pendingGridRefresh) {
+			return $false
+		}
+
+		$pending = $script:pendingGridRefresh
+		if ($pending.DatasetType -ne $script:activeDatasetType) {
+			$script:pendingGridRefresh = $null
+			return $false
+		}
+
+		$script:pendingGridRefresh = $null
+
+		if ($pending.ClearGrid) {
+			$script:displayedRunId = $null
+			$script:displayedRunTimestamp = $null
+			$script:currentDataTable = Convert-ItemsToDataTable -Items @()
+			$DataGridView1.DataSource = $script:currentDataTable
+			& $ApplyFilter
+			return $true
+		}
+
+		if ($pending.RunId -and ($script:displayedRunId -ne $pending.RunId)) {
+			& $LoadRunIntoGrid -RunId $pending.RunId -DisplayTimestamp $pending.LastSuccessfulRunAt
+			return $true
+		}
+
+		$script:displayedRunTimestamp = $pending.LastSuccessfulRunAt
+		& $UpdateInfoDisplay
+		return $true
+	}
+
+	$QueuePendingGridRefresh = {
+		param(
+			$LatestMetadata,
+			[switch]$ClearGrid
+		)
+
+		$script:pendingGridRefresh = [pscustomobject]@{
+			ClearGrid = $ClearGrid.IsPresent
+			DatasetType = $script:activeDatasetType
+			RunId = if ($LatestMetadata) { $LatestMetadata.RunId } else { $null }
+			LastSuccessfulRunAt = if ($LatestMetadata) { $LatestMetadata.LastSuccessfulRunAt } else { $null }
+		}
+	}
+
+	$RegisterIdleTracking = {
+		param([System.Windows.Forms.Control]$Control)
+
+		if (-not $Control) {
+			return
+		}
+
+		$Control.Add_Click({ & $MarkUiActivity })
+		$Control.Add_MouseDown({ & $MarkUiActivity })
+		$Control.Add_MouseWheel({ & $MarkUiActivity })
+		$Control.Add_KeyDown({ & $MarkUiActivity })
+
+		if ($Control -is [System.Windows.Forms.TextBoxBase]) {
+			$Control.Add_TextChanged({ & $MarkUiActivity })
+		}
+
+		if ($Control -is [System.Windows.Forms.DataGridView]) {
+			$Control.Add_Scroll({ & $MarkUiActivity })
+		}
+
+		$Control.Add_ControlAdded({
+			param($sender, $e)
+			if ($e.Control) {
+				& $RegisterIdleTracking -Control $e.Control
+			}
+		})
+
+		foreach ($child in $Control.Controls) {
+			& $RegisterIdleTracking -Control $child
+		}
+	}
+
 	$ApplyFilter = {
 		$dv = New-Object System.Data.DataView($script:currentDataTable)
 		$terms = $FilterTextBox.Text -split '\s+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
@@ -1587,7 +1694,7 @@ function Start-UiMode {
 			$dv.RowFilter = ($escapedTerms | ForEach-Object { "(Name LIKE '%$_%' OR Location LIKE '%$_%')" }) -join ' AND '
 		}
 		$DataGridView1.DataSource = $dv
-		Set-InfoLabel -Label $InfoLabel -RowCount $dv.Count -DisplayTimestamp $script:displayedRunTimestamp -HeartbeatTimestamp $script:lastSuccessfulRunAt -Form $Form -DatasetType $script:activeDatasetType -HistoricalRun:$script:isViewingHistoricalRun -StatusMessage $script:lastStatusMessage
+		& $UpdateInfoDisplay
 	}
 
 	$LoadRunIntoGrid = {
@@ -1610,6 +1717,7 @@ function Start-UiMode {
 	}
 
 	$ReloadCurrentRun = {
+		& $ClearPendingGridRefresh
 		try {
 			$latest = Get-CurrentPublishedRunMetadata -DatasetType $script:activeDatasetType
 			if (-not $latest -or -not $latest.RunId) {
@@ -1777,7 +1885,10 @@ function Start-UiMode {
 		}
 	})
 
-	$FilterTextBox.Add_TextChanged({ & $ApplyFilter })
+	$FilterTextBox.Add_TextChanged({
+		& $MarkUiActivity
+		& $ApplyFilter
+	})
 
 	$InfoLabel.Add_Click({
 		try {
@@ -1848,6 +1959,8 @@ function Start-UiMode {
 
 	$MusicCheckbox.Add_CheckedChanged({
 		try {
+			& $MarkUiActivity
+			& $ClearPendingGridRefresh
 			$script:activeDatasetType = if ($MusicCheckbox.Checked) { $MusicDatasetType } else { $RegularDatasetType }
 			$script:isViewingHistoricalRun = $false
 			$script:lastStatusMessage = $null
@@ -1866,6 +1979,8 @@ function Start-UiMode {
 	if ($TimeMachineButton) {
 		$TimeMachineButton.Add_Click({
 			try {
+				& $MarkUiActivity
+				& $ClearPendingGridRefresh
 				$selectedRunId = Show-RunPickerDialog -Owner $Form -Icon $Icon -CurrentPublishedRunId $script:currentPublishedRunId -DatasetType $script:activeDatasetType
 				if (-not $selectedRunId) {
 					return
@@ -1908,7 +2023,7 @@ function Start-UiMode {
 			} catch {
 				$script:lastStatusMessage = 'DB unavailable'
 			}
-			& $ApplyFilter
+			& $UpdateInfoDisplay
 			return
 		}
 
@@ -1917,11 +2032,18 @@ function Start-UiMode {
 			if (-not $latest -or -not $latest.RunId) {
 				$script:lastSuccessfulRunAt = $null
 				$script:currentPublishedRunId = $null
-				$script:displayedRunId = $null
-				$script:displayedRunTimestamp = $null
-				$script:currentDataTable = Convert-ItemsToDataTable -Items @()
-				$DataGridView1.DataSource = $script:currentDataTable
-				& $ApplyFilter
+				$script:lastStatusMessage = $null
+				if (& $IsUiIdle) {
+					$script:displayedRunId = $null
+					$script:displayedRunTimestamp = $null
+					$script:currentDataTable = Convert-ItemsToDataTable -Items @()
+					$DataGridView1.DataSource = $script:currentDataTable
+					& $ClearPendingGridRefresh
+					& $ApplyFilter
+				} else {
+					& $QueuePendingGridRefresh -ClearGrid
+					& $UpdateInfoDisplay
+				}
 				return
 			}
 
@@ -1929,15 +2051,27 @@ function Start-UiMode {
 			$script:currentPublishedRunId = $latest.RunId
 			if ($script:displayedRunId -ne $latest.RunId) {
 				$script:lastStatusMessage = $null
-				& $LoadRunIntoGrid -RunId $latest.RunId -DisplayTimestamp $latest.LastSuccessfulRunAt
+				if (& $IsUiIdle) {
+					& $ClearPendingGridRefresh
+					& $LoadRunIntoGrid -RunId $latest.RunId -DisplayTimestamp $latest.LastSuccessfulRunAt
+				} else {
+					& $QueuePendingGridRefresh -LatestMetadata $latest
+					& $UpdateInfoDisplay
+				}
 			} else {
 				$script:displayedRunTimestamp = $latest.LastSuccessfulRunAt
 				$script:lastStatusMessage = $null
-				& $ApplyFilter
+				& $UpdateInfoDisplay
 			}
 		} catch {
 			$script:lastStatusMessage = 'DB unavailable'
-			& $ApplyFilter
+			& $UpdateInfoDisplay
+		}
+	})
+
+	$UiIdleTimer.Add_Tick({
+		if (& $IsUiIdle) {
+			[void](& $ApplyPendingGridRefresh)
 		}
 	})
 
@@ -1960,12 +2094,15 @@ function Start-UiMode {
 		$controls += $TimeMachineButton
 	}
 	$Form.Controls.AddRange($controls)
+	& $RegisterIdleTracking -Control $Form
 
 	$Form.Add_Shown({
+		& $MarkUiActivity
 		Align-TopRowControls -Controls $topRowControls
 		Update-InfoLabelPosition -Label $InfoLabel -Form $Form
 		& $ApplyFilter
 		$PollTimer.Start()
+		$UiIdleTimer.Start()
 	})
 
 	$Form.Add_FormClosing({
@@ -1989,6 +2126,7 @@ function Start-UiMode {
 
 	$Form.Add_FormClosed({
 		$PollTimer.Stop()
+		$UiIdleTimer.Stop()
 		Close-AppConnection
 	})
 
